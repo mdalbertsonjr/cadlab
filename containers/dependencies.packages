@@ -1,0 +1,16 @@
+base
+base-devel
+git
+less
+neovim
+which
+tmux
+ripgrep
+npm
+python
+python-setuptools
+python-pip
+python-pipx
+python-pylint
+autopep8
+freecad
