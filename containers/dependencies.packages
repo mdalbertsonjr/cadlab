@@ -14,3 +14,4 @@ python-pipx
 python-pylint
 autopep8
 freecad
+gettext
