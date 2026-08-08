@@ -13,7 +13,10 @@ scripts-and-agent-workflow repo, not an application.
 ## Architecture: the CAD generation pipeline
 
 The core workflow is a three-stage agent pipeline defined as skills under
-`cad-scripts/<skill-name>/SKILL.md`:
+`.claude/skills/<skill-name>/SKILL.md`. This path is a Claude Code Agent
+Skill location, but OpenCode discovers skills there too (as a
+"Claude-compatible" search path), so one copy serves both agents — do not
+duplicate these under `.opencode/` or `.agents/`.
 
 1. **`cad-forward`** — natural language part description → a new parametric
    FreeCAD Python script written to `/home/developer/cad-output/<part-name>.py`.
@@ -26,13 +29,17 @@ The core workflow is a three-stage agent pipeline defined as skills under
    failure. It never edits scripts itself — fixing a failed build is a
    `cad-forward`/`cad-reverse` follow-up, not a `cad-build` job.
 
-`cad-scripts/*.py` (e.g. `wall-bumper.py`, `pegboard-hygrometer-holder.py`,
-`sander-vac-adapter.py`, `text-stencil.py`) are example outputs of this
-pipeline and double as reference implementations of the script conventions
-below.
+Each generated part lives in its own directory under `cad-scripts/`
+(`cad-scripts/<part-name>/<part-name>.py` plus a `README.md` describing the
+part, its parameters, and any deviation from the standard conventions).
+`wall-bumper`, `pegboard-hygrometer-holder`, `sander-vac-adapter`, and
+`text-stencil` are example outputs of this pipeline and double as reference
+implementations of the script conventions below — when adding a new part,
+create a new `cad-scripts/<part-name>/` directory with its own README the
+same way.
 
 **When generating or editing a FreeCAD script, follow the full conventions in
-`cad-scripts/cad-forward/SKILL.md`** (or `cad-reverse/SKILL.md` when
+`.claude/skills/cad-forward/SKILL.md`** (or `cad-reverse/SKILL.md` when
 reconstructing from an existing model) rather than improvising. The
 non-obvious rules that make these scripts work in the FreeCAD GUI:
 
@@ -85,7 +92,7 @@ docker run --rm -it -e OPENCODE_ZEN_API_KEY=<key> cad-agent
 
 # Run a FreeCAD script directly (must use FreeCAD's bundled python3,
 # available inside the container or wherever the `freecad` package is installed)
-python3 cad-scripts/<script>.py
+python3 cad-scripts/<part-name>/<part-name>.py
 ```
 
 There are no lint/test commands configured in this repo.
