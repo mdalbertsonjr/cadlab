@@ -20,7 +20,7 @@ duplicate these under `.opencode/` or `.agents/`.
 
 1. **`cad-forward`** — natural language part description → a new parametric
    FreeCAD Python script written to `/home/developer/cad-output/<part-name>.py`.
-2. **`cad-reverse`** — an existing model file (STL/STEP/FCStd) + user-supplied
+2. **`cad-reverse`** — an existing model file (STL/STEP/FCStd/3MF) + user-supplied
    metadata → a reconstructed parametric script, same output convention as
    `cad-forward` but suffixed `-parametric.py`. Requires the agent to print
    inferred parameters and get user confirmation before generating code.

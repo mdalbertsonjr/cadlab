@@ -21,6 +21,7 @@ Inspect the model file to cross-reference with the provided metadata:
 - **STL files:** Read the binary or ASCII vertex data to estimate overall bounding box and key dimensions. Look for repeating geometric patterns (arrays of features, symmetry axes) that suggest parametric relationships.
 - **STEP files:** Parse the geometry tree to identify named solids, faces, and their dimensions.
 - **`.FCStd` files:** Open with FreeCAD and inspect the document tree for existing features, constraints, and expressions.
+- **3MF files:** Slicer-exported 3MF (Bambu Studio, PrusaSlicer, etc.) is mesh data, not BREP — treat it like STL. Load it with FreeCAD's bundled `python3` via `Mesh.insert(path, doc.Name)` (the `Mesh` module reads 3MF directly), which produces a `Mesh::Feature`; then inspect its vertex data the same way as an STL for bounding box and repeating features. A 3MF with multiple objects/plates yields one `Mesh::Feature` per object — treat each as a separate part unless the metadata says they're one assembly.
 
 If the file does not exist or cannot be read, stop and tell the user.
 
