@@ -60,6 +60,24 @@ non-obvious rules that make these scripts work in the FreeCAD GUI:
   `Saved: <path>` line; STL export is a manual step the user does in the
   FreeCAD GUI after reviewing geometry.
 
+## Physical validation
+
+A `.FCStd` looking right in the FreeCAD GUI, or an agent's own headless
+geometry/recompute check, is a pre-flight sanity check — not validation.
+**For any `/wayfinder` map whose destination concerns a physical part (or
+set of parts), the map's actual destination is only reached once a human has
+printed the part(s) and confirmed they work.** When charting a new map like
+this, its Destination/Notes should say so explicitly, and its final ticket
+should be a human task: print it, check fit/function, record the outcome.
+
+The agent never has access to a physical 3D printer, and never will —
+starting a print and judging the printed result are permanently human-only
+steps. **Slicing is a different story:** it's software, not a physical
+device, and there's a planned direction to run a headless slicer as part of
+the pipeline — feeding back AI-generated-support warnings and other
+slicer diagnostics to improve the generated scripts. Don't treat slicing
+itself as off-limits; only printer hardware access is the permanent line.
+
 ## Container / agent runtime
 
 `containers/` builds the sandbox the CAD agent actually runs in:
