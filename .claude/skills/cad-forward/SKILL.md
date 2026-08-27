@@ -1,6 +1,6 @@
 ---
 name: cad-forward
-description: Natural language description → parametric FreeCAD Python script saved to cad-output/
+description: Natural language description → parametric FreeCAD Python script saved to cad-scripts/
 argument-hint: <part description>
 ---
 
@@ -27,9 +27,9 @@ Once you have enough to produce a correct script, proceed to Step 2. If the desc
 
 Write a FreeCAD Python script following all conventions below. Save it to:
 
-    /home/developer/cad-output/<part-name>.py
+    cad-scripts/<part-name>/<part-name>.py
 
-where `<part-name>` is a short, lowercase, hyphen-separated name derived from the part description (e.g. `mounting-bracket`, `standoff-m3`, `snap-clip`).
+where `<part-name>` is a short, lowercase, hyphen-separated name derived from the part description (e.g. `mounting-bracket`, `standoff-m3`, `snap-clip`). Create the `cad-scripts/<part-name>/` directory if it doesn't exist yet.
 
 ### Script conventions
 
@@ -133,8 +133,8 @@ cut2.Tool = hole2
 doc.recompute()
 
 # Save parametric model (editable in FreeCAD GUI)
-doc.saveAs("/home/developer/cad-output/<part-name>.FCStd")
-print("Saved: /home/developer/cad-output/<part-name>.FCStd")
+doc.saveAs("cad-scripts/<part-name>/<part-name>.FCStd")
+print("Saved: cad-scripts/<part-name>/<part-name>.FCStd")
 ```
 
 Do **not** export an STL from the script. The user will verify geometry in FreeCAD first, then export for slicing themselves.
@@ -156,10 +156,16 @@ Parameters for <part-name>.py:
 
 ---
 
-## Step 4 — Prompt the user to review and build
+## Step 4 — Write the project README
+
+Write `cad-scripts/<part-name>/README.md` describing the part: what it is, a one-paragraph geometry summary (how it's built from the primitives/booleans above), and a parameters table (alias, default, meaning). Follow the existing part directories (`wall-bumper`, `sander-vac-adapter`, etc.) as the template, including a **Caveat**/deviation note if this script departs from the standard conventions above.
+
+---
+
+## Step 5 — Prompt the user to review and build
 
 End with:
 
-> Script saved to `/home/developer/cad-output/<part-name>.py`. Review it, then run `/cad-build <part-name>.py` to generate the `.FCStd` file.
+> Script saved to `cad-scripts/<part-name>/<part-name>.py` (with `README.md` alongside it). Review it, then run `/cad-build <part-name>` to generate the `.FCStd` file.
 >
 > Open the `.FCStd` in FreeCAD to verify geometry. To change a dimension, select the **Parameters** spreadsheet in the model tree, edit the value, and press **Ctrl+R** to recompute. Export to STL from FreeCAD when the geometry looks correct.

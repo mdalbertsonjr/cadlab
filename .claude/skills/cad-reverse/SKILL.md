@@ -1,6 +1,6 @@
 ---
 name: cad-reverse
-description: Existing model + metadata → parametric FreeCAD Python script saved to cad-output/
+description: Existing model + metadata → parametric FreeCAD Python script saved to cad-scripts/
 argument-hint: <model-file> [metadata: key dimensions, functional intent, parameter relationships]
 ---
 
@@ -49,9 +49,9 @@ Print the inferred parameter list and ask the user to **confirm or correct** bef
 
 Once the user confirms (or corrects) the parameter list, generate a FreeCAD Python script following all conventions below. Save it to:
 
-    /home/developer/cad-output/<part-name>-parametric.py
+    cad-scripts/<part-name>/<part-name>-parametric.py
 
-where `<part-name>` is a short, lowercase, hyphen-separated name derived from the model file name or description (e.g. `can-dispenser`, `shelf-bracket`).
+where `<part-name>` is a short, lowercase, hyphen-separated name derived from the model file name or description (e.g. `can-dispenser`, `shelf-bracket`). Create the `cad-scripts/<part-name>/` directory if it doesn't exist yet.
 
 ### Script conventions
 
@@ -149,8 +149,8 @@ Available boolean types:
 doc.recompute()
 
 # Save parametric model (editable in FreeCAD GUI)
-doc.saveAs("/home/developer/cad-output/<part-name>-parametric.FCStd")
-print("Saved: /home/developer/cad-output/<part-name>-parametric.FCStd")
+doc.saveAs("cad-scripts/<part-name>/<part-name>-parametric.FCStd")
+print("Saved: cad-scripts/<part-name>/<part-name>-parametric.FCStd")
 ```
 
 Do **not** export an STL from the script. The user will verify geometry in FreeCAD first, then export for slicing themselves.
@@ -174,10 +174,16 @@ Parameters for <part-name>-parametric.py:
 
 ---
 
-## Step 5 — Prompt the user to review and build
+## Step 5 — Write the project README
+
+Write `cad-scripts/<part-name>/README.md` describing the part: what it is, a one-paragraph geometry summary (how it's built from the primitives/booleans above, and how faithfully it matches the source model — call out any deliberate simplification), and a parameters table (alias, default, meaning). Follow the existing part directories (`wall-bumper`, `sander-vac-adapter`, etc.) as the template, including a **Caveat** note for any deviation from the standard conventions or from the original model's geometry.
+
+---
+
+## Step 6 — Prompt the user to review and build
 
 End with:
 
-> Script saved to `/home/developer/cad-output/<part-name>-parametric.py`. Review it, then run `/cad-build <part-name>-parametric.py` to generate the `.FCStd` file.
+> Script saved to `cad-scripts/<part-name>/<part-name>-parametric.py` (with `README.md` alongside it). Review it, then run `/cad-build <part-name>-parametric` to generate the `.FCStd` file.
 >
 > Open the `.FCStd` in FreeCAD to verify geometry against the original model. To test parametric correctness, select the **Parameters** spreadsheet in the model tree, change `can_diameter` or `can_height` to a different can size, press **Ctrl+R**, and confirm the geometry scales correctly. Export to STL from FreeCAD when satisfied.

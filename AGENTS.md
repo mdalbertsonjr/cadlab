@@ -19,7 +19,8 @@ Skill location, but OpenCode discovers skills there too (as a
 duplicate these under `.opencode/` or `.agents/`.
 
 1. **`cad-forward`** — natural language part description → a new parametric
-   FreeCAD Python script written to `/home/developer/cad-output/<part-name>.py`.
+   FreeCAD Python script written straight to
+   `cad-scripts/<part-name>/<part-name>.py`, plus a `README.md` alongside it.
 2. **`cad-reverse`** — an existing model file (STL/STEP/FCStd/3MF) + user-supplied
    metadata → a reconstructed parametric script, same output convention as
    `cad-forward` but suffixed `-parametric.py`. Requires the agent to print
@@ -31,12 +32,12 @@ duplicate these under `.opencode/` or `.agents/`.
 
 Each generated part lives in its own directory under `cad-scripts/`
 (`cad-scripts/<part-name>/<part-name>.py` plus a `README.md` describing the
-part, its parameters, and any deviation from the standard conventions).
+part, its parameters, and any deviation from the standard conventions). The
+`.FCStd` a build produces lands in that same directory but is never
+committed — it's a local, regeneratable artifact (see `.gitignore`).
 `wall-bumper`, `pegboard-hygrometer-holder`, `sander-vac-adapter`, and
 `text-stencil` are example outputs of this pipeline and double as reference
-implementations of the script conventions below — when adding a new part,
-create a new `cad-scripts/<part-name>/` directory with its own README the
-same way.
+implementations of the script conventions below.
 
 **When generating or editing a FreeCAD script, follow the full conventions in
 `.claude/skills/cad-forward/SKILL.md`** (or `cad-reverse/SKILL.md` when
@@ -87,8 +88,9 @@ non-obvious rules that make these scripts work in the FreeCAD GUI:
 # Build the CAD agent container
 docker build -t cad-agent containers/
 
-# Run it (needs the model provider key for entrypoint.sh's envsubst step)
-docker run --rm -it -e OPENCODE_ZEN_API_KEY=<key> cad-agent
+# Run it (needs the model provider key for entrypoint.sh's envsubst step;
+# mount the repo so cad-forward/cad-reverse can write into cad-scripts/ on the host)
+docker run --rm -it -e OPENCODE_ZEN_API_KEY=<key> -v "$(pwd)":/home/cad/cadlab -w /home/cad/cadlab cad-agent
 
 # Run a FreeCAD script directly (must use FreeCAD's bundled python3,
 # available inside the container or wherever the `freecad` package is installed)

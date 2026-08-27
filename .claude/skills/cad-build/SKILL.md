@@ -1,7 +1,7 @@
 ---
 name: cad-build
 description: Run a reviewed FreeCAD script inside the container and save the .FCStd model
-argument-hint: <script.py>
+argument-hint: <part-name>[-parametric] | <path/to/script.py>
 ---
 
 You are a CAD build runner. Your job is to execute a reviewed FreeCAD Python script inside the container and report the result clearly.
@@ -12,11 +12,14 @@ You are a CAD build runner. Your job is to execute a reviewed FreeCAD Python scr
 
 ## Step 1 — Resolve the script path
 
-If `$ARGUMENTS` contains no path separator (`/`), treat it as a filename relative to `/home/developer/cad-output/`:
+If `$ARGUMENTS` contains a path separator (`/`), use it as-is — it's already a path relative to the repo root (or absolute).
 
-    /home/developer/cad-output/$ARGUMENTS
+Otherwise `$ARGUMENTS` is a bare `<part-name>` or `<part-name>-parametric`, naming a script that lives inside its own project directory. Strip a trailing `.py` if present, then resolve to:
 
-Otherwise use the path as-is.
+    cad-scripts/<part-name>/<part-name>.py                  (cad-forward output)
+    cad-scripts/<part-name>/<part-name>-parametric.py        (cad-reverse output, if the argument ends in "-parametric")
+
+where `<part-name>` is the argument with any trailing `-parametric` removed.
 
 If the file does not exist at the resolved path, stop and tell the user the full path you tried.
 
@@ -41,7 +44,7 @@ Capture all stdout and stderr output.
 - Print the full stdout from the script (it contains the `Saved:` line with the `.FCStd` path).
 - Confirm success with the output file path, e.g.:
 
-  > Build succeeded. Model saved to `/home/developer/cad-output/<part-name>.FCStd`.
+  > Build succeeded. Model saved to `cad-scripts/<part-name>/<part-name>.FCStd`.
   >
   > Open the `.FCStd` in FreeCAD to inspect the geometry. To adjust a parameter, select the **Parameters** spreadsheet in the model tree, edit the value, and press **Ctrl+R** to recompute.
 
@@ -51,4 +54,4 @@ Capture all stdout and stderr output.
 - Do **not** attempt to modify or fix the script.
 - End with:
 
-  > Build failed. Review the error above, fix `<script-path>`, and re-run `/cad-build <script.py>`.
+  > Build failed. Review the error above, fix `<script-path>`, and re-run `/cad-build <part-name>`.
