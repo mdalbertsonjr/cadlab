@@ -174,6 +174,7 @@ loft.Ruled = True
 
 Rules:
 - Only the meaningful tunable dimensions (a constraint, an offset) need a spreadsheet alias via `setExpression` — this is the one place the "never a plain Python variable" rule relaxes: the sketch's own wire topology can be Python-computed from those dimensions rather than every vertex needing its own cell.
+- **Fully constrain every profile sketch — position, not just size.** An under-constrained sketch (or one with a mismatched `Horizontal`/`Vertical` constraint against the actual edge orientation — easy to get backwards when indexing edges by hand) can produce a shape that looks completely normal on casual inspection (`repr()`, `.Wires`) but is **silently null under `.isValid()`'s deep check** — a distinct trap from the ones below, caught by testing, not by reading the code. Assert `sketch.FullyConstrained` right after building it, before wiring it into a Loft/Sweep.
 - `Part::Loft`/`Part::Sweep`'s own properties (`Ruled`, `Solid`, `Closed`) are structural switches, not measured dimensions — set them as plain Python booleans unless a part genuinely needs one to vary parametrically. If it does, bind it to a **numeric** `0`/`1` spreadsheet cell: a text `'True'`/`'False'` cell parses without error but silently evaluates to `False`.
 - **Loft/Sweep can silently produce invalid or wrong-topology geometry with no error indicator** (open-contour sections, orientation-dependent twists, self-intersecting sweeps are all documented FreeCAD failure modes). Any script using them must assert the final shape before saving:
 
