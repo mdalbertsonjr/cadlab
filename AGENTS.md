@@ -12,7 +12,7 @@ scripts-and-agent-workflow repo, not an application.
 
 ## Architecture: the CAD generation pipeline
 
-The core workflow is a three-stage agent pipeline defined as skills under
+The core workflow is a four-stage agent pipeline defined as skills under
 `.claude/skills/<skill-name>/SKILL.md`. This path is a Claude Code Agent
 Skill location, but OpenCode discovers skills there too (as a
 "Claude-compatible" search path), so one copy serves both agents — do not
@@ -29,6 +29,12 @@ duplicate these under `.opencode/` or `.agents/`.
    `python3` and reports the resulting `.FCStd` path, or the raw traceback on
    failure. It never edits scripts itself — fixing a failed build is a
    `cad-forward`/`cad-reverse` follow-up, not a `cad-build` job.
+4. **`cad-slice`** — slices a built part and its original reference model
+   through the same headless PrusaSlicer with the same checked-in profile and
+   compares the two G-codes (aggregate metrics, then per-layer toolpaths) —
+   the machine check on geometric fidelity that runs before any human time is
+   spent on GUI review or printing. Same discipline as `cad-build`: it never
+   edits scripts; a FAIL feeds the next `cad-forward`/`cad-reverse` iteration.
 
 Each generated part lives in its own directory under `cad-scripts/`
 (`cad-scripts/<part-name>/<part-name>.py` plus a `README.md` describing the
@@ -73,9 +79,10 @@ should be a human task: print it, check fit/function, record the outcome.
 The agent never has access to a physical 3D printer, and never will —
 starting a print and judging the printed result are permanently human-only
 steps. **Slicing is a different story:** it's software, not a physical
-device, and there's a planned direction to run a headless slicer as part of
-the pipeline — feeding back AI-generated-support warnings and other
-slicer diagnostics to improve the generated scripts. Don't treat slicing
+device, and the pipeline runs a headless slicer (PrusaSlicer, in the
+container) via the `cad-slice` skill — slicing both the reference model and
+the reconstruction to G-code and comparing them, feeding mismatches and
+slicer diagnostics back into the generated scripts. Don't treat slicing
 itself as off-limits; only printer hardware access is the permanent line.
 
 ## Container / agent runtime
