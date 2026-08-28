@@ -143,6 +143,50 @@ Available boolean types:
 - `Part::Common` — `Base`, `Tool`
 - `Part::MultiCommon`, `Part::MultiFuse` — `Shapes` (list)
 
+**Non-primitive geometry — `Part::Loft`/`Part::Sweep` via `Sketcher::SketchObject` profiles, for shapes primitives can't express.**
+
+Most parts are fully expressible as primitives + booleans above — stay there by default, including for a dramatic but *stepped* cross-section (stack primitives at different positions/sizes). Reach for a loft/sweep only when the source model's cross-section changes **continuously** along an axis in a way that can't reasonably be approximated by a handful of stacked primitives (a tapering profile, a swept rail) — inspect for this the same way you inspect for a bounding box in Step 1, by bucketing vertices along the longest axis and checking whether the other two axes' spans vary smoothly or in discrete steps.
+
+`Draft::Wire` does not work in this pipeline — it throws `ImportError` under the plain `python3 <script>.py` invocation `cad-build` uses (it needs FreeCAD's Gui subsystem). Build profiles as `Sketcher::SketchObject`s instead — no extra code needed, and constraints bind to the spreadsheet exactly like a primitive's dimensions do:
+
+```python
+import Sketcher
+
+# Profile 1: circle sized by the flange radius
+profile1 = doc.addObject("Sketcher::SketchObject", "Profile1")
+profile1.addGeometry(Part.Circle(FreeCAD.Vector(0, 0, 0), FreeCAD.Vector(0, 0, 1), 1.0))
+profile1.addConstraint(Sketcher.Constraint("Radius", 0, 1.0))
+profile1.setExpression("Constraints[0]", "Parameters.flange_radius")
+
+# Profile 2: circle sized by the trough radius, offset along the taper
+profile2 = doc.addObject("Sketcher::SketchObject", "Profile2")
+profile2.addGeometry(Part.Circle(FreeCAD.Vector(0, 0, 0), FreeCAD.Vector(0, 0, 1), 1.0))
+profile2.addConstraint(Sketcher.Constraint("Radius", 0, 1.0))
+profile2.setExpression("Constraints[0]", "Parameters.trough_radius")
+profile2.setExpression("Placement.Base.z", "Parameters.taper_length")
+
+# Loft between the two profiles
+loft = doc.addObject("Part::Loft", "Loft1")
+loft.Sections = [profile1, profile2]
+loft.Solid = True
+loft.Ruled = True
+```
+
+Rules:
+- Only the meaningful tunable dimensions (a constraint, an offset) need a spreadsheet alias via `setExpression` — this is the one place the "never a plain Python variable" rule relaxes: the sketch's own wire topology can be Python-computed from those dimensions rather than every vertex needing its own cell.
+- `Part::Loft`/`Part::Sweep`'s own properties (`Ruled`, `Solid`, `Closed`) are structural switches, not measured dimensions — set them as plain Python booleans unless a part genuinely needs one to vary parametrically. If it does, bind it to a **numeric** `0`/`1` spreadsheet cell: a text `'True'`/`'False'` cell parses without error but silently evaluates to `False`.
+- **Loft/Sweep can silently produce invalid or wrong-topology geometry with no error indicator** (open-contour sections, orientation-dependent twists, self-intersecting sweeps are all documented FreeCAD failure modes). Any script using them must assert the final shape before saving:
+
+```python
+if not result.Shape.isValid() or len(result.Shape.Solids) != 1:
+    raise RuntimeError(
+        f"Invalid or non-solid geometry after Loft/Sweep: "
+        f"isValid={result.Shape.isValid()}, solids={len(result.Shape.Solids)}"
+    )
+```
+
+This is a targeted check against Loft/Sweep's specific known risk, not a general geometry-quality pass — that's the separate parametric-quality skill's territory.
+
 **Recompute and save — always the last steps:**
 
 ```python
