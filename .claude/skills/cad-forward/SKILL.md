@@ -183,6 +183,7 @@ Available boolean types:
 - **Fully constrain every sketch — position, not just size.** An under-constrained sketch (or one with a mismatched `Horizontal`/`Vertical` constraint against the actual edge orientation — easy to get backwards when indexing edges by hand) can produce a shape that looks completely normal on casual inspection (`repr()`, `.Wires`) but is **silently null under `.isValid()`'s deep check**, or silently wrong (a hole/groove in the wrong place) — a trap caught by testing, not by reading the code. Assert `sketch.FullyConstrained` right after building each one, before wiring it into a Pad/Pocket/Hole/Loft.
 - **A sketch's `AttachmentSupport` face reference (e.g. `"Face6"`) is only as stable as the feature that produced it** — FreeCAD's face numbering can shift if an upstream feature (dimensions, order) changes. Pick the face by inspecting the actual prior feature's `.Shape.Faces` in the script (e.g. by position/normal) rather than hardcoding a face name from a one-off guess, when the part's parametrization could plausibly change which face ends up where.
 - Structural switches (`Pocket.Type`, `Hole.DepthType`, `Pad.Reversed`, `Loft`/`Sweep`'s legacy `Ruled`/`Solid`/`Closed` if a standalone `Part::Loft`/`Sweep` is ever still used) are not measured dimensions — set them as plain Python values unless a part genuinely needs one to vary parametrically. If it does, bind it to a **numeric** `0`/`1` spreadsheet cell: a text `'True'`/`'False'` cell parses without error but silently evaluates to `False`.
+- **Never set `Pad`/`Pocket`'s `Midplane` property — it's deprecated and can silently fail to take effect** (FreeCAD logs it as replaced by `SideType`, and has been observed reporting the stored value as `False` even when the script set `Midplane = True`, leaving the feature built one-sided instead of centered, with no exception raised). Use `feature.SideType = "Symmetric"` instead of `Midplane = True` (other values: `"One side"`, `"Two sides"`).
 - **A loft built from only its two endpoint sections is a straight-line interpolation between them, not the real curve you meant to describe.** If a tapering/varying profile has a shape more complex than a straight interpolation between its start and end, use enough intermediate section sketches (one per meaningfully distinct cross-section) for the loft/pipe to actually follow that curve.
 - **`Pad`/`Pocket`/`Hole`/`Loft`/`Sweep` can all silently produce invalid or wrong-topology geometry with no error indicator** (open-contour sections, orientation-dependent twists, self-intersecting lofts/sweeps, a Pocket that fails to fully cut are all documented FreeCAD failure modes). Any script using them must assert the final shape before saving, against the Body's resulting tip shape:
 
@@ -195,6 +196,16 @@ if not body.Tip.Shape.isValid() or len(body.Tip.Shape.Solids) != 1:
 ```
 
 This is a targeted check against PartDesign's specific known failure class, not a general geometry-quality pass — that's the separate parametric-quality skill's territory.
+
+**For a `PartDesign::Body` part, hide everything but the finished solid before saving.** `Pad`/`Pocket`/`Hole`/`Loft` features correctly hide the *feature* they supersede, but not the *sketch* that feature was built from — with a real part's worth of sketches (base, section, boss, hole profiles) all left visible, the GUI shows an unreadable tangle of overlapping wireframes instead of the finished part, making visual QA impossible. `Visibility` is an App-level property, readable/settable headlessly (no `FreeCADGui` import needed) — add this right before saving:
+
+```python
+for obj in doc.Objects:
+    if hasattr(obj, "Visibility"):
+        obj.Visibility = False
+body.Tip.Visibility = True
+body.Visibility = True
+```
 
 **Recompute and save — always the last steps:**
 
