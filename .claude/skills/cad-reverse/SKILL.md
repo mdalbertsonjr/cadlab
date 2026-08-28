@@ -25,6 +25,8 @@ Inspect the model file to cross-reference with the provided metadata:
 
 If the file does not exist or cannot be read, stop and tell the user.
 
+**Assembly context — look for mating features when a neighboring part's geometry is available.** If the model file (or a sibling file the user points to) bundles multiple objects that mate together — a multi-object 3MF/STEP, or several separate reference files for one assembly — inspect the target part's mesh *alongside* its neighbors, not in isolation. A neighbor's geometry can reveal negative-space features that exist specifically to interface with it (a retention groove, a snap-fit lip, an alignment/fastener hole) that are invisible or ambiguous from the target part's mesh alone. Carry any candidates into Step 2 as inferred parameters, same as a measured dimension. If no assembly context is available, do not invent mating features from a single part's mesh in isolation — distinguishing a functional negative-space feature from a cosmetic one isn't reliably possible from one part alone; rely on the user's metadata instead.
+
 ---
 
 ## Step 2 — Infer parameters
@@ -35,6 +37,7 @@ From the inspection and provided metadata, identify the key parameters that driv
 - `wall_thickness` → drives structural shell
 - `shelf_count` → drives array repetition
 - `base_width`, `base_depth` → drives footprint
+- a mating feature found via assembly-context inspection in Step 1 (e.g. `lid_groove_width`, `fastener_hole_diameter`) — its position, sizing, and what it mates with
 
 For each inferred parameter, note:
 - Its name and default value (from metadata or measured from the model)
@@ -93,19 +96,19 @@ Rules:
 - Put all derived/computed values in the spreadsheet too (as formulas), not as Python expressions.
 - Use cell references (`=B1 / 2`) rather than re-typing values in derived rows.
 
-**Geometry — use Part document objects, not raw `Part.make*` shapes.**
+**Geometry — PartDesign (`Body`/`Sketch`/`Pad`/`Pocket`/`Hole`/`AdditiveLoft`/`AdditivePipe`) is the default construction method.** This is closer to how a human designer actually works — sketch a profile, then build the solid up from it — and it's what makes mating features (grooves, holes) and continuously-varying profiles (tapers, swept rails) all fall out of the same convention instead of needing a separate escape hatch for each.
 
-Geometry must be created as named document objects so they appear in the FreeCAD model tree. Every dimension property must use `setExpression()` referencing the spreadsheet via `Parameters.<alias>`.
+**Exception — a part that is genuinely and entirely one bare primitive** (a single box, a single cylinder, nothing else going on) can skip PartDesign and just be the primitive directly:
 
 ```python
-# Outer shell
+# Outer shell — the whole part is this one box, nothing else
 shell = doc.addObject("Part::Box", "Shell")
 shell.setExpression("Length", "Parameters.slot_width + 2 * Parameters.wall")
 shell.setExpression("Width",  "Parameters.can_height + 2 * Parameters.wall")
 shell.setExpression("Height", "Parameters.total_height")
 ```
 
-Available Part document object types and their key properties:
+Available Part primitive types and their key properties, for this exception case only:
 - `Part::Box` — `Length`, `Width`, `Height`
 - `Part::Cylinder` — `Radius`, `Height`, `Angle` (default 360°)
 - `Part::Cone` — `Radius1`, `Radius2`, `Height`
@@ -114,27 +117,91 @@ Available Part document object types and their key properties:
 
 For translations and positioning always use `setExpression()` on `Placement.Base.x/y/z`.
 
-**Repeating features** — use Python loops to instantiate arrays of Part document objects, naming each one with an index:
+**The moment a part has more than one feature — any pocket, hole, groove, mating feature, or non-axis-aligned profile — build it as a `PartDesign::Body`.** `Draft::Wire` still does not work in this pipeline — it throws `ImportError` under the plain `python3 <script>.py` invocation `cad-build` uses (it needs FreeCAD's Gui subsystem). Profiles are `Sketcher::SketchObject`s, same as before, but now attached to the Body's datum planes or to a prior feature's face, and constraints still bind to the spreadsheet exactly like a primitive's dimensions do:
+
+```python
+import Sketcher
+import PartDesign
+
+body = doc.addObject("PartDesign::Body", "Body")
+
+# Base sketch on the XY plane
+base_sketch = body.newObject("Sketcher::SketchObject", "BaseSketch")
+base_sketch.AttachmentSupport = [(doc.XY_Plane, "")]
+base_sketch.MapMode = "FlatFace"
+# ... addGeometry + addConstraint calls, fully constrained (see Rules below) ...
+
+# Pad the base sketch into a solid
+pad = body.newObject("PartDesign::Pad", "Pad")
+pad.Profile = base_sketch
+pad.setExpression("Length", "Parameters.pad_length")
+pad.Reversed = False
+doc.recompute()
+
+# A groove: sketch on the Pad's top face, then Pocket cuts it in
+pocket_sketch = body.newObject("Sketcher::SketchObject", "PocketSketch")
+pocket_sketch.AttachmentSupport = [(pad, "Face6")]  # the specific face the groove sits on
+pocket_sketch.MapMode = "FlatFace"
+# ... fully-constrained rectangle/profile geometry ...
+
+pocket = body.newObject("PartDesign::Pocket", "Pocket")
+pocket.Profile = pocket_sketch
+pocket.setExpression("Length", "Parameters.groove_depth")
+pocket.Type = "Length"  # dimension-driven depth, not "ThroughAll"/"UpToFace"/etc.
+doc.recompute()
+
+# A fastener hole: sketch a circle center point on a face, then Hole cuts it through
+hole_sketch = body.newObject("Sketcher::SketchObject", "HoleSketch")
+hole_sketch.AttachmentSupport = [(pocket, "Face1")]
+hole_sketch.MapMode = "FlatFace"
+# ... a single fully-constrained point (or tiny construction circle) locating the hole center ...
+
+hole = body.newObject("PartDesign::Hole", "Hole")
+hole.Profile = hole_sketch
+hole.setExpression("Diameter", "Parameters.fastener_hole_diameter")
+hole.DepthType = "ThroughAll"
+doc.recompute()
+```
+
+**A continuously-varying profile** (a taper, a swept rail — the case that used to reach for standalone `Part::Loft`/`Part::Sweep`) is now `PartDesign::AdditiveLoft` (or `AdditivePipe` for a swept rail), built from sketches within the same Body rather than a separate document object:
+
+```python
+# Section sketches along the taper — use enough of them to represent the real curve,
+# not just the two endpoints (see Rules below for why that matters)
+section1 = body.newObject("Sketcher::SketchObject", "Section1")
+# ... attached/placed at the taper's start, fully constrained ...
+section2 = body.newObject("Sketcher::SketchObject", "Section2")
+# ... attached/placed partway along the taper, fully constrained ...
+section3 = body.newObject("Sketcher::SketchObject", "Section3")
+# ... attached/placed at the taper's end, fully constrained ...
+
+loft = body.newObject("PartDesign::AdditiveLoft", "Loft")
+loft.Profile = section1
+loft.Sections = [section2, section3]
+doc.recompute()
+```
+
+**Repeating features** — loop to instantiate multiple `Pocket`/`Hole`/`Pad` features within the same Body (or multiple bare primitives, in the trivial-primitive exception case), naming each one with an index:
 
 ```python
 for i in range(int(sheet.get("B3"))):  # shelf_count — read int from spreadsheet
-    slot = doc.addObject("Part::Box", f"Slot{i}")
-    slot.setExpression("Length", "Parameters.slot_width")
-    slot.setExpression("Width",  "Parameters.can_height")
-    slot.setExpression("Height", "Parameters.wall")
-    slot.setExpression("Placement.Base.z", f"Parameters.wall + {i} * Parameters.shelf_spacing")
+    slot_sketch = body.newObject("Sketcher::SketchObject", f"SlotSketch{i}")
+    slot_sketch.AttachmentSupport = [(pad, "Face6")]
+    slot_sketch.MapMode = "FlatFace"
+    slot_sketch.AttachmentOffset = FreeCAD.Placement(FreeCAD.Vector(0, 0, 0), FreeCAD.Rotation())
+    slot_sketch.setExpression("AttachmentOffset.Position.z", f"{i} * Parameters.shelf_spacing")
+    # ... fully-constrained slot profile ...
+    slot = body.newObject("PartDesign::Pocket", f"Slot{i}")
+    slot.Profile = slot_sketch
+    slot.setExpression("Length", "Parameters.wall")
 ```
 
-**Boolean operations — use Part document objects, not `.cut()` / `.fuse()` on shapes.**
+**Combining independent solids — `Part::Cut`/`Fuse`/`Common` between `PartDesign::Body` objects (or bare primitives).** A single Body's own feature chain (Pad/Pocket/Hole/Loft) is now the default way to carve one contiguous solid — reach for a top-level boolean only when a part genuinely consists of two independently-sketched solids that don't share one feature-chain lineage (e.g. two Bodies fused together, or a Body cut by a bare primitive):
 
 ```python
-cut1 = doc.addObject("Part::Cut", "Cut1")
-cut1.Base = shell
-cut1.Tool = slot0
-
-cut2 = doc.addObject("Part::Cut", "Result")
-cut2.Base = cut1
-cut2.Tool = slot1
+cut1 = doc.addObject("Part::Cut", "Result")
+cut1.Base = body           # a PartDesign::Body works here too — use body.Tip or the Body itself
+cut1.Tool = other_body
 ```
 
 Available boolean types:
@@ -143,50 +210,23 @@ Available boolean types:
 - `Part::Common` — `Base`, `Tool`
 - `Part::MultiCommon`, `Part::MultiFuse` — `Shapes` (list)
 
-**Non-primitive geometry — `Part::Loft`/`Part::Sweep` via `Sketcher::SketchObject` profiles, for shapes primitives can't express.**
-
-Most parts are fully expressible as primitives + booleans above — stay there by default, including for a dramatic but *stepped* cross-section (stack primitives at different positions/sizes). Reach for a loft/sweep only when the source model's cross-section changes **continuously** along an axis in a way that can't reasonably be approximated by a handful of stacked primitives (a tapering profile, a swept rail) — inspect for this the same way you inspect for a bounding box in Step 1, by bucketing vertices along the longest axis and checking whether the other two axes' spans vary smoothly or in discrete steps.
-
-`Draft::Wire` does not work in this pipeline — it throws `ImportError` under the plain `python3 <script>.py` invocation `cad-build` uses (it needs FreeCAD's Gui subsystem). Build profiles as `Sketcher::SketchObject`s instead — no extra code needed, and constraints bind to the spreadsheet exactly like a primitive's dimensions do:
-
-```python
-import Sketcher
-
-# Profile 1: circle sized by the flange radius
-profile1 = doc.addObject("Sketcher::SketchObject", "Profile1")
-profile1.addGeometry(Part.Circle(FreeCAD.Vector(0, 0, 0), FreeCAD.Vector(0, 0, 1), 1.0))
-profile1.addConstraint(Sketcher.Constraint("Radius", 0, 1.0))
-profile1.setExpression("Constraints[0]", "Parameters.flange_radius")
-
-# Profile 2: circle sized by the trough radius, offset along the taper
-profile2 = doc.addObject("Sketcher::SketchObject", "Profile2")
-profile2.addGeometry(Part.Circle(FreeCAD.Vector(0, 0, 0), FreeCAD.Vector(0, 0, 1), 1.0))
-profile2.addConstraint(Sketcher.Constraint("Radius", 0, 1.0))
-profile2.setExpression("Constraints[0]", "Parameters.trough_radius")
-profile2.setExpression("Placement.Base.z", "Parameters.taper_length")
-
-# Loft between the two profiles
-loft = doc.addObject("Part::Loft", "Loft1")
-loft.Sections = [profile1, profile2]
-loft.Solid = True
-loft.Ruled = True
-```
-
-Rules:
-- Only the meaningful tunable dimensions (a constraint, an offset) need a spreadsheet alias via `setExpression` — this is the one place the "never a plain Python variable" rule relaxes: the sketch's own wire topology can be Python-computed from those dimensions rather than every vertex needing its own cell.
-- **Fully constrain every profile sketch — position, not just size.** An under-constrained sketch (or one with a mismatched `Horizontal`/`Vertical` constraint against the actual edge orientation — easy to get backwards when indexing edges by hand) can produce a shape that looks completely normal on casual inspection (`repr()`, `.Wires`) but is **silently null under `.isValid()`'s deep check** — a distinct trap from the ones below, caught by testing, not by reading the code. Assert `sketch.FullyConstrained` right after building it, before wiring it into a Loft/Sweep.
-- `Part::Loft`/`Part::Sweep`'s own properties (`Ruled`, `Solid`, `Closed`) are structural switches, not measured dimensions — set them as plain Python booleans unless a part genuinely needs one to vary parametrically. If it does, bind it to a **numeric** `0`/`1` spreadsheet cell: a text `'True'`/`'False'` cell parses without error but silently evaluates to `False`.
-- **Loft/Sweep can silently produce invalid or wrong-topology geometry with no error indicator** (open-contour sections, orientation-dependent twists, self-intersecting sweeps are all documented FreeCAD failure modes). Any script using them must assert the final shape before saving:
+**Rules:**
+- Only the meaningful tunable dimensions (a constraint, an offset) need a spreadsheet alias via `setExpression` — this is the one place the "never a plain Python variable" rule relaxes: a sketch's own wire topology can be Python-computed from those dimensions rather than every vertex needing its own cell.
+- **Fully constrain every sketch — position, not just size.** An under-constrained sketch (or one with a mismatched `Horizontal`/`Vertical` constraint against the actual edge orientation — easy to get backwards when indexing edges by hand) can produce a shape that looks completely normal on casual inspection (`repr()`, `.Wires`) but is **silently null under `.isValid()`'s deep check**, or silently wrong (a groove/hole in the wrong place) — a trap caught by testing, not by reading the code. Assert `sketch.FullyConstrained` right after building each one, before wiring it into a Pad/Pocket/Hole/Loft.
+- **A sketch's `AttachmentSupport` face reference (e.g. `"Face6"`) is only as stable as the feature that produced it** — FreeCAD's face numbering can shift if an upstream feature (dimensions, order) changes. Pick the face by inspecting the actual prior feature's `.Shape.Faces` in the script (e.g. by position/normal) rather than hardcoding a face name from a one-off GUI inspection, when the part's parametrization could plausibly change which face ends up where.
+- Structural switches (`Pocket.Type`, `Hole.DepthType`, `Pad.Reversed`, `Loft`/`Sweep`'s legacy `Ruled`/`Solid`/`Closed` if a standalone `Part::Loft`/`Sweep` is ever still used) are not measured dimensions — set them as plain Python values unless a part genuinely needs one to vary parametrically. If it does, bind it to a **numeric** `0`/`1` spreadsheet cell: a text `'True'`/`'False'` cell parses without error but silently evaluates to `False`.
+- **A loft built from only its two endpoint sections is a straight-line interpolation between them, not the real curve** — this is exactly the bug that made an earlier can-dispenser-ramp rebuild fail QA despite passing its own recompute check: a 2-section `Ruled=True` loft discarded the intermediate cross-section measurements that were actually taken. If Step 1's inspection found the profile changing continuously along an axis, use enough intermediate section sketches (one per meaningfully distinct measured cross-section, not just start and end) for the loft/pipe to actually follow that curve.
+- **`Pad`/`Pocket`/`Hole`/`Loft`/`Sweep` can all silently produce invalid or wrong-topology geometry with no error indicator** (open-contour sections, orientation-dependent twists, self-intersecting lofts/sweeps, a Pocket that fails to fully cut are all documented FreeCAD failure modes). Any script using them must assert the final shape before saving, against the Body's resulting tip shape:
 
 ```python
-if not result.Shape.isValid() or len(result.Shape.Solids) != 1:
+if not body.Tip.Shape.isValid() or len(body.Tip.Shape.Solids) != 1:
     raise RuntimeError(
-        f"Invalid or non-solid geometry after Loft/Sweep: "
-        f"isValid={result.Shape.isValid()}, solids={len(result.Shape.Solids)}"
+        f"Invalid or non-solid geometry after {body.Tip.Name}: "
+        f"isValid={body.Tip.Shape.isValid()}, solids={len(body.Tip.Shape.Solids)}"
     )
 ```
 
-This is a targeted check against Loft/Sweep's specific known risk, not a general geometry-quality pass — that's the separate parametric-quality skill's territory.
+This is a targeted check against PartDesign's specific known failure class, not a general geometry-quality pass — that's the separate parametric-quality skill's territory.
 
 **Recompute and save — always the last steps:**
 
