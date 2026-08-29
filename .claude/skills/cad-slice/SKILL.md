@@ -63,13 +63,33 @@ source mesh's own coordinate frame, so the boxes should match; if they don't,
 the comparison would be meaningless and the script exits non-zero with both
 boxes printed. Stop and report that error verbatim if it fires.
 
-## Step 3 — Slice both with the checked-in profile
+## Step 3 — Manifold pre-check
+
+Cheaper than a full slice, and catches a class of problem the G-code
+comparison can't localize well (a part that's topologically fine — single
+manifold solid — but whose *members* don't actually contact each other where
+they should is a different, subtler problem the per-layer signal in Step 5
+does catch; this step only catches outright disconnection/non-manifold
+geometry):
+
+```bash
+prusa-slicer --info baseline.stl
+prusa-slicer --info candidate.stl
+```
+
+Check both outputs for `manifold = yes` and `number_of_parts = 1`. Stop and
+report verbatim if either fails — slicing (let alone comparing) a
+non-manifold or multi-part mesh isn't meaningful.
+
+## Step 4 — Slice both with the checked-in profile
 
 ```bash
 prusa-slicer --export-gcode baseline.stl --center 200,200 \
-    --load .claude/skills/cad-slice/profile.ini -o baseline.gcode
+    --load .claude/skills/cad-slice/profile.ini -o baseline.gcode \
+    > baseline.slice.log 2>&1
 prusa-slicer --export-gcode candidate.stl --center 200,200 \
-    --load .claude/skills/cad-slice/profile.ini -o candidate.gcode
+    --load .claude/skills/cad-slice/profile.ini -o candidate.gcode \
+    > candidate.slice.log 2>&1
 ```
 
 `--center 200,200` places both models at the same bed position — without it
@@ -78,16 +98,25 @@ outside of the print volume", and identical placement is what makes the
 per-layer bounding boxes comparable at all. `profile.ini` is checked in
 beside this skill so every run is reproducible; a generic 0.4mm-nozzle /
 0.2mm-layer PLA profile on an oversized 400×400 bed (big parts must fit —
-realism doesn't matter, only that both sides use the identical profile). Supports are off: support towers are
-placement-heuristic-sensitive and would add noise, and slicer warnings about
-needing supports are themselves useful feedback. If PrusaSlicer errors on one
-side only, that itself is a finding — report it verbatim (a non-manifold or
-self-intersecting candidate mesh often errors where the baseline doesn't).
+realism doesn't matter, only that both sides use the identical profile).
+Supports are off: support towers are placement-heuristic-sensitive and would
+add noise. If PrusaSlicer errors on one side only, that itself is a finding —
+report it verbatim (a non-manifold or self-intersecting candidate mesh often
+errors where the baseline doesn't).
 
-## Step 4 — Compare
+**The captured logs matter, not just the G-code.** PrusaSlicer emits a
+`print warning: Detected print stability issues: ... Floating bridge
+anchors, Long bridging extrusions ...` line to stdout at default settings
+whenever it detects unsupported bridging/overhangs — previously silently
+discarded because nothing captured stdout. It doesn't fail the slice (exit
+code stays 0), so redirecting to a log file and feeding it to Step 5 is the
+only way to see it.
+
+## Step 5 — Compare
 
 ```bash
-python3 .claude/skills/cad-slice/compare_gcode.py baseline.gcode candidate.gcode
+python3 .claude/skills/cad-slice/compare_gcode.py baseline.gcode candidate.gcode \
+    baseline.slice.log candidate.slice.log
 ```
 
 Two tiers, cheap first: an **aggregate gate** (layer count ±1, filament used
@@ -97,7 +126,18 @@ deviation flags the layer) and extrusion path length (>15% flags it), failing
 if more than 5% of layers flag. Tolerances are constants at the top of the
 script. Exit 0 = pass, 1 = fail, human-readable summary either way.
 
-## Step 5 — Report
+**Print-stability warning (informational, not a pass/fail input):** the
+comparison also reports whether PrusaSlicer's stability warning (see Step 4)
+appeared on each side. A warning on *both* sides usually means the reference
+part has genuine unsupported bridging by design (not every real part is
+self-supporting everywhere) — not itself a defect to fix. A warning on only
+*one* side is the actionable signal: the reconstruction introduced (or
+accidentally fixed) a structural connectivity problem the other side doesn't
+have. This isn't wired into the pass/fail verdict yet — there's no calibrated
+tolerance for it — so read it manually until a future session has enough
+data points to set one.
+
+## Step 6 — Report
 
 Print the comparison summary verbatim, then:
 

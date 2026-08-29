@@ -84,11 +84,17 @@ def poly_sketch(name, plane, offset, pts, y_expr_idx=None, y_expr=None):
     return sk
 
 
-def assert_valid_tip(label):
-    if not body.Tip.Shape.isValid() or len(body.Tip.Shape.Solids) != 1:
+def assert_valid_tip(label, require_single_solid=True):
+    """require_single_solid=False for a window where the cap rail is a
+    deliberately still-disconnected floating member -- it only rejoins the
+    main mass via the per-tooth connectors added after the rib loop, matching
+    the real part's genuinely intermittent rib-to-cap-rail contact. isValid()
+    is still checked either way."""
+    n_solids = len(body.Tip.Shape.Solids)
+    if not body.Tip.Shape.isValid() or (require_single_solid and n_solids != 1):
         raise RuntimeError(
             f"Invalid or non-solid geometry after {label} ({body.Tip.Name}): "
-            f"isValid={body.Tip.Shape.isValid()}, solids={len(body.Tip.Shape.Solids)}"
+            f"isValid={body.Tip.Shape.isValid()}, solids={n_solids}"
         )
 
 
@@ -157,101 +163,238 @@ assert_valid_tip("FloorPlate")
 # cap-rail hook (Z 70.15..85.53, main span), and their continuation past
 # the floor's end (s>=180) as climbing rails converging toward the tip.
 # =====================================================================
-WALL_BAND_TOP = 25.0
 CAP_BOTTOM = 70.15
-# A per-layer diagnostic found the main-span cap rail closing at the full
-# measured max height (85.53) for its entire 180mm run puts material at
-# Z 84-85 across nearly the whole part length (candidate X bbox 232 vs
-# baseline's ~224.6) -- the real part's max height is reached only near the
-# tip. A same-session attempt to fix this by lowering CAP_TOP to 83
-# regressed further (lost 2 G-code layers, introduced a 224mm-deviation
-# layer) -- reverted to the measured value; this specific mismatch is left
-# as an open, documented finding for the next iteration rather than a fix
-# attempted again with no more iteration budget this session. See README
-# Caveat and the #34 resolution comment.
+# A prior iteration wrongly diagnosed the per-layer mismatch here as a height
+# problem (assumed CAP_TOP needed tapering along s) -- a direct re-measurement
+# disproved that: the cap rail really is constant-height Z[70.15,85.53] from
+# s~10 to s~185. The real defect was CONNECTIVITY (see the per-tooth connector
+# loop after the ribs, below), not height -- CAP_TOP stays at its measured value.
 CAP_TOP = 85.53
 CAP_LIP_Y_EXTRA = 3.4  # outward lip reach beyond the wall's outer face
 
+# Wall band top edge -- NOT flat at Z=25 (the original assumption, documented
+# as "sub-tolerance" without dense verification). A direct mesh re-inspection
+# this session, isolating the floor+wallband combined wire from the
+# separately-floating rib/cap-rail wires at each cross-section (5 distinct
+# wires appear from s~38 onward: 2x cap rail, 1x floor+wallband, 2x rib --
+# the floor+wallband wire is the one with the widest Y-span, >100mm, spanning
+# both sides), found its top edge SMOOTHLY DECLINES from ~33mm near s=34 down
+# to ~19mm at s=182 -- not flat, and not a sharp zigzag either (the earlier
+# "zigzagging" read was from coarser, less-attributed sampling). This flat-top
+# approximation was the actual trigger for spurious "Top solid infill"/
+# "Bridge infill" toolpath at Z~25 that regressed two different entry-wedge
+# rebuild attempts (see Caveats) -- the real part doesn't present nearly as
+# large a contiguous flat top surface there.
+WALL_BAND_PROFILE = [
+    # (s, top_z) -- s<34 held constant at the s=34 measured value since that
+    # span is dominated by the entry wedge/cap-rail-taper merge (a single
+    # combined wire in the mesh there, not a separable wall-band edge).
+    (0.0, 33.0),
+    (34.0, 33.0),
+    (40.0, 28.55),
+    (60.0, 25.5),
+    (90.0, 24.0),
+    (120.0, 22.5),
+    (150.0, 20.9),
+    (182.0, 19.2),
+]
+
 for side, sign in (("Pos", 1), ("Neg", -1)):
-    # Lower band, main span: simple constant-cross-section pad, s=0..180.
-    y_in = sign * inner_half_width
-    y_out = sign * outer_half_width
-    band_pts = [
-        FreeCAD.Vector(min(y_in, y_out), 0.0, 0),
-        FreeCAD.Vector(max(y_in, y_out), 0.0, 0),
-        FreeCAD.Vector(max(y_in, y_out), WALL_BAND_TOP, 0),
-        FreeCAD.Vector(min(y_in, y_out), WALL_BAND_TOP, 0),
-    ]
-    # Width positions here are Python-baked at the current parameter values
-    # (re-run the script to rescale), not live setExpression-bound -- the
-    # floor plate (the dominant mass/footprint driver) carries the live
-    # width binding; these secondary members follow the same precedent
-    # already accepted for most of #31's members.
-    band_sk = poly_sketch(f"WallBand{side}Sketch", "YZ_Plane", FreeCAD.Vector(0, 0, 0), band_pts)
-    band_pad = body.newObject("PartDesign::Pad", f"WallBand{side}Pad")
-    band_pad.Profile = band_sk
-    band_pad.Length = 180.0
-    band_pad.setExpression("Length", "Parameters.main_length")
-    band_pad.Reversed = False
+    band_sketches = []
+    for i, (s, zt) in enumerate(WALL_BAND_PROFILE):
+        # Outer face measured at Y~67.8, not outer_half_width(66.2) -- a
+        # consistent 1.6mm/side gap found via direct mesh re-sampling (5
+        # locations, Z 6-20 band, all agreeing to within 0.05mm) after a
+        # G-code layer diff flagged a systematic ~3.2mm total Y-narrowing
+        # across most of the part's low-to-mid-height layers. 67.8 exactly
+        # matches the rib's own outer reach (rib_y + rib_width/2) -- the wall
+        # band is genuinely thicker at its outer face than the rest of the
+        # wall, flush with where the ribs sit, not thinner than them.
+        y_in = sign * inner_half_width
+        y_out = sign * (outer_half_width + 1.6)
+        pts = [
+            FreeCAD.Vector(min(y_in, y_out), 0.0, 0),
+            FreeCAD.Vector(max(y_in, y_out), 0.0, 0),
+            FreeCAD.Vector(max(y_in, y_out), zt, 0),
+            FreeCAD.Vector(min(y_in, y_out), zt, 0),
+        ]
+        sk = poly_sketch(f"WallBand{side}{i}", "YZ_Plane", FreeCAD.Vector(0, 0, s), pts)
+        band_sketches.append(sk)
+    band_pad = body.newObject("PartDesign::AdditiveLoft", f"WallBand{side}Pad")
+    band_pad.Profile = band_sketches[0]
+    band_pad.Sections = band_sketches[1:]
+    band_pad.Ruled = True  # the measured decline is piecewise-linear between sample points
     doc.recompute()
-    assert_valid_tip(f"WallBand{side}Pad")
+    # require_single_solid=False from here on: once the Pos-side cap rail is
+    # padded later in this same loop it's a floating member until the
+    # per-tooth connectors (after the rib loop) rejoin it -- that floating
+    # state is visible to every assert_valid_tip call from this point on,
+    # including WallBandNegPad on the loop's second iteration.
+    assert_valid_tip(f"WallBand{side}Pad", require_single_solid=False)
 
     # Cap rail hook, main span: 7-point polygon approximating the lid-engagement
     # hook (straight segments standing in for the measured rounded tip), at its
-    # actual measured height (CAP_BOTTOM=70.15) -- an earlier attempt extended
-    # this down to the wall band to guarantee a fuse, but that turned the real
-    # open-truss void (Z 25-70, baseline area ~800-900mm^2, mostly just the
-    # diagonal ribs passing through) into a solid panel for the full 180mm
-    # length -- >2x the real material there. Reverted; a single thin connector
-    # post (below) handles the fuse instead.
+    # actual measured height (CAP_BOTTOM=70.15) -- a second per-layer diagnostic
+    # (this session) found this height/span was ALREADY correct; the real
+    # defect was connectivity. Two earlier attempts both got that wrong in
+    # opposite directions: extending the hook down to the wall band made the
+    # real open-truss void (mostly just the diagonal ribs passing through) a
+    # solid panel for the full 180mm length (>2x real material there); a single
+    # full-length thin connector post did the same thing at smaller scale. Real
+    # mesh inspection found the cap rail is a genuinely disconnected floating
+    # member almost everywhere -- it only touches the ribs in narrow ~2-3mm
+    # windows, once per rib tooth. Per-tooth connectors (below, after the rib
+    # loop) replace both prior attempts.
     y_wall_in = inner_half_width
     y_wall_out = outer_half_width
     y_lip = outer_half_width + CAP_LIP_Y_EXTRA
+    # A direct per-layer G-code diff (this session) found the main span's cap
+    # rail is uniformly ~4.6mm too wide across nearly the entire part length
+    # at Z=83-85.5mm -- NOT an end-taper problem, a shape problem in the main
+    # hook profile itself. A precise mesh re-inspection (3 independent s
+    # locations, 60/100/140, identical result) found the top of the hook is
+    # not a smooth diagonal narrowing from the lip down to the wall face --
+    # there's a genuine SHARP STEP at Z=CAP_STEP=83.0 (both edges jump
+    # simultaneously: outer Y 68.8->67.3, inner Y 63.0->65.1), above which a
+    # narrow 2.2mm RIDGE (Y=CAP_RIDGE_OUT..CAP_RIDGE_IN) runs flat to CAP_TOP
+    # -- not the full wall_in..wall_out band the previous shape assumed.
+    CAP_STEP_Z = 83.0
+    CAP_RIDGE_OUT = 67.3
+    CAP_RIDGE_IN = 65.1
     hook_local = [
         (y_wall_in, CAP_BOTTOM),
         (y_wall_out, CAP_BOTTOM),
         (y_wall_out, 75.4),
         (y_lip, 78.6),
-        (y_lip, 82.6),
-        (y_wall_out, CAP_TOP),
-        (y_wall_in, CAP_TOP),
+        (y_lip, CAP_STEP_Z),
+        (CAP_RIDGE_OUT, CAP_STEP_Z),
+        (CAP_RIDGE_OUT, CAP_TOP),
+        (CAP_RIDGE_IN, CAP_TOP),
+        (CAP_RIDGE_IN, CAP_STEP_Z),
+        (y_wall_in, CAP_STEP_Z),
     ]
     hook_pts = [FreeCAD.Vector(sign * y, z, 0) for y, z in hook_local]
     if sign < 0:
         hook_pts = list(reversed(hook_pts))
-    hook_sk = poly_sketch(f"CapRail{side}Sketch", "YZ_Plane", FreeCAD.Vector(0, 0, 0), hook_pts)
+    # Attempted fix (this session): starting the cap rail later than s=0, on
+    # the theory the entry wedge zone shouldn't also carry cap-rail material.
+    # Reverted -- direct per-layer comparison showed the full-length cap rail
+    # was already CORRECT for nearly the entire height range (baseline and
+    # candidate agreed from Z=3 up to Z~82.6); shortening it broke that
+    # agreement (new ~38mm deviation, Z=79.6-84.6) while leaving the actual
+    # narrow top-band mismatch (Z~82.8-85.2, ~12 layers, likely under the 5%
+    # fail threshold on its own) completely unchanged. Root cause of that
+    # narrow band is still open -- see README Caveat/#34 comment.
+    # Entry-end taper (s=0..ENTRY_TAPER_FULL_START): a direct mesh re-inspection
+    # (this session, following the user's GUI report that "the top of the part
+    # doesn't extend all the length that it's supposed to") found the far end
+    # wasn't the only place the cap rail's cross-section changes with s -- the
+    # entry end does too, and it's NOT a simple mirror of CapRailTip. Measured
+    # Zmax at the entry: flat at 83.03mm from s=0 to s=6 (the hook's lip-tip
+    # height only, the final top-closing segment up to CAP_TOP missing), then
+    # ramps linearly to the full CAP_TOP=85.53 by s=9, flat from there on. The
+    # main hook_pad below only starts at ENTRY_TAPER_FULL_START (s=9), where
+    # the flat full-hook cross-section is already correct.
+    ENTRY_TAPER_FLAT_END = 6.0
+    ENTRY_TAPER_FULL_START = 9.0
+    ENTRY_CAP_SHORT_TOP = 83.03
+    # Same 10-point topology/order as hook_local (a mismatched point count
+    # between loft sections is exactly what produced a non-manifold candidate
+    # on an earlier attempt here -- OCC's loft can't find a consistent vertex
+    # correspondence). The entry region has no ridge at all (measured Zmax
+    # plateaus at 83.03 flat, never reaching CAP_TOP) -- points 5-8 collapse
+    # toward the step height with tiny (0.01mm) distinct Z offsets so no two
+    # points are exactly coincident (a zero-length edge risked its own
+    # degenerate-sketch problems elsewhere in this script).
+    short_hook_local = [
+        (y_wall_in, CAP_BOTTOM),
+        (y_wall_out, CAP_BOTTOM),
+        (y_wall_out, 75.4),
+        (y_lip, 78.6),
+        (y_lip, ENTRY_CAP_SHORT_TOP),
+        (CAP_RIDGE_OUT, ENTRY_CAP_SHORT_TOP),
+        (CAP_RIDGE_OUT, ENTRY_CAP_SHORT_TOP + 0.01),
+        (CAP_RIDGE_IN, ENTRY_CAP_SHORT_TOP + 0.01),
+        (CAP_RIDGE_IN, ENTRY_CAP_SHORT_TOP),
+        (y_wall_in, ENTRY_CAP_SHORT_TOP),
+    ]
+    short_hook_pts = [FreeCAD.Vector(sign * y, z, 0) for y, z in short_hook_local]
+    if sign < 0:
+        short_hook_pts = list(reversed(short_hook_pts))
+    entry_s0_sk = poly_sketch(f"CapRailEntryStart{side}Sketch", "YZ_Plane",
+                               FreeCAD.Vector(0, 0, 0.0), short_hook_pts)
+    entry_flat_sk = poly_sketch(f"CapRailEntryFlat{side}Sketch", "YZ_Plane",
+                                 FreeCAD.Vector(0, 0, ENTRY_TAPER_FLAT_END), short_hook_pts)
+    entry_full_sk = poly_sketch(f"CapRailEntryFull{side}Sketch", "YZ_Plane",
+                                 FreeCAD.Vector(0, 0, ENTRY_TAPER_FULL_START), hook_pts)
+    entry_taper = body.newObject("PartDesign::AdditiveLoft", f"CapRailEntryTaper{side}")
+    entry_taper.Profile = entry_s0_sk
+    entry_taper.Sections = [entry_flat_sk, entry_full_sk]
+    entry_taper.Ruled = True  # plateau then linear ramp -- matches the measured shape
+    doc.recompute()
+
+    # Start 0.5mm before the taper's own endpoint -- genuine volume overlap,
+    # not a flush touching face, which OCC has left as two separate solids
+    # elsewhere in this script (see WallBand/CapRail's own history above).
+    HOOK_PAD_START = ENTRY_TAPER_FULL_START - 0.5
+    hook_sk = poly_sketch(f"CapRail{side}Sketch", "YZ_Plane",
+                           FreeCAD.Vector(0, 0, HOOK_PAD_START), hook_pts)
     hook_pad = body.newObject("PartDesign::Pad", f"CapRail{side}Pad")
     hook_pad.Profile = hook_sk
-    hook_pad.Length = 180.0
-    hook_pad.setExpression("Length", "Parameters.main_length")
+    # Length: a direct mesh re-inspection (this session, ticket #34) found
+    # the cap rail present continuously past s~185 (every prior measurement
+    # pass wrongly assumed it stopped there) -- this directly matches the
+    # user's own visual finding ("the top of the part doesn't extend all the
+    # length that it's supposed to"). But a first attempt to extend it flat
+    # to the full ramp_length overshot: a per-layer G-code diff found the
+    # real cap rail's LENGTH-vs-Z relationship isn't uniform near the tip --
+    # at Z~70 (near CAP_BOTTOM) material recedes to s~223.7, while at Z~85
+    # (near CAP_TOP) it reaches the true tip s~232.8. A tapering loft section
+    # below (CapRailTip) covers s=CAP_TAPER_START..ramp_length; this pad only
+    # goes to CAP_TAPER_START, where the flat cross-section is still correct.
+    CAP_TAPER_START = 223.7
+    hook_pad.Length = CAP_TAPER_START - HOOK_PAD_START
     hook_pad.Reversed = False
     doc.recompute()
     # Not asserted here: CapRail is disconnected from the rest of the solid
-    # until the connector post right below joins them (expected 2-solids
-    # state, not a bug) -- the assert moves to after the connector.
+    # until the per-tooth connectors (added after the rib loop below) join
+    # them -- expected multi-solid state at this point, not a bug.
 
-    # Thin connector post: fuses CapRail (Z 70.15-85.53) to WallBand (Z 0-25)
-    # with minimal added mass, standing in for whatever the real part's
-    # structural connection through the open-truss void actually is (not
-    # resolved by the material-map inspection). 4mm wide in s, placed just
-    # before the ribs start (s=2) so it doesn't add to the already-measured
-    # rib mass; both CapRail and WallBand are single continuous pads for the
-    # full main span, so one connector per side is enough to fuse everything.
-    post_y_in = sign * inner_half_width
-    post_y_out = sign * outer_half_width
-    post_pts = [
-        FreeCAD.Vector(min(post_y_in, post_y_out), WALL_BAND_TOP - 1.0, 0),
-        FreeCAD.Vector(max(post_y_in, post_y_out), WALL_BAND_TOP - 1.0, 0),
-        FreeCAD.Vector(max(post_y_in, post_y_out), CAP_BOTTOM + 1.0, 0),
-        FreeCAD.Vector(min(post_y_in, post_y_out), CAP_BOTTOM + 1.0, 0),
+    # Tip taper (s=CAP_TAPER_START..ramp_length): the cap rail's cross-section
+    # shrinks from the full hook height (bottom=CAP_BOTTOM) down to a thin
+    # flat sliver at the true tip -- measured slope ~1.65-1.68mm Z per mm s,
+    # matching the rest of the part's rise ratio. There's too little material
+    # left there for the lip/rounded-tip detail to matter, but the tip profile
+    # must still share hook_pts' 7-point topology -- lofting a 7-point profile
+    # against an unrelated 4-point rectangle (the original approach here) is
+    # exactly the bug class fixed in the entry-taper above: OCC can't find a
+    # consistent vertex correspondence and produces a self-intersecting,
+    # non-manifold surface (only caught once the manifold pre-check existed
+    # to catch it -- FreeCAD's own isValid() does not). Fix: proportionally
+    # compress hook_local's own height range down to [tip_bottom_end, CAP_TOP]
+    # instead, preserving all 7 points and their correspondence -- the hook
+    # shape shrinks toward the tip rather than being replaced by a rectangle.
+    tip_bottom_end = CAP_TOP - 1.0
+    tip_hook_local = [
+        (y, tip_bottom_end + (z - CAP_BOTTOM) / (CAP_TOP - CAP_BOTTOM) * (CAP_TOP - tip_bottom_end))
+        for y, z in hook_local
     ]
-    post_sk = poly_sketch(f"ConnectorPost{side}Sketch", "YZ_Plane", FreeCAD.Vector(0, 0, 2.0), post_pts)
-    post_pad = body.newObject("PartDesign::Pad", f"ConnectorPost{side}Pad")
-    post_pad.Profile = post_sk
-    post_pad.Length = 4.0
-    post_pad.Reversed = False
+    tip_hook_pts = [FreeCAD.Vector(sign * y, z, 0) for y, z in tip_hook_local]
+    if sign < 0:
+        tip_hook_pts = list(reversed(tip_hook_pts))
+    tip_start_sk = poly_sketch(
+        f"CapRailTipStart{side}Sketch", "YZ_Plane",
+        FreeCAD.Vector(0, 0, CAP_TAPER_START), hook_pts,
+    )
+    tip_end_sk = poly_sketch(
+        f"CapRailTipEnd{side}Sketch", "YZ_Plane",
+        FreeCAD.Vector(0, 0, 232.9), tip_hook_pts,
+    )
+    tip = body.newObject("PartDesign::AdditiveLoft", f"CapRailTip{side}")
+    tip.Profile = tip_start_sk
+    tip.Sections = [tip_end_sk]
+    tip.Ruled = True
     doc.recompute()
-    assert_valid_tip(f"ConnectorPost{side}Pad")
 
     # Climbing rails past the floor's end (s=182..232): lower band and cap
     # rail both continue at the measured rise slope (~1.678mm Z per mm s,
@@ -280,7 +423,7 @@ for side, sign in (("Pos", 1), ("Neg", -1)):
     rise.Sections = rise_sketches[1:]
     rise.Ruled = True
     doc.recompute()
-    assert_valid_tip(f"RiseBand{side}")
+    assert_valid_tip(f"RiseBand{side}", require_single_solid=False)
 
 # =====================================================================
 # E. Bottom outer skirt (both sides, s=0..180). Simplified to overlap the
@@ -308,20 +451,48 @@ for side, sign in (("Pos", 1), ("Neg", -1)):
     pad.setExpression("Length", "Parameters.main_length")
     pad.Reversed = False
     doc.recompute()
-    assert_valid_tip(f"Skirt{side}Pad")
+    assert_valid_tip(f"Skirt{side}Pad", require_single_solid=False)
 
 # =====================================================================
-# F. Entry wedge (gusset panels, s=0..35, both sides): tall/reaching-inward
-# near s=0, tapering to short/near-the-wall by s=35, fading into the floor.
-# Simplified from the measured V-diagonal boundary to a 2-section loft --
-# captures the overall mass/height taper, not the exact diagonal edge.
+# F. Entry wedge (gusset panels, s=0..40, both sides): tall/reaching-inward
+# near s=0, tapering to short/near-the-wall by s=40, fading into the floor.
+# Simplified from the measured V-diagonal boundary to a 6-section loft --
+# expanded from an earlier 2-section version to follow the measured
+# top-edge-descent curve (Z~=83 at s<=3, 53@10, 34@20, 22@30, fading by
+# s~=40) more closely.
+#
+# REVERTED THIS SESSION: a from-scratch rebuild decomposing this into a
+# fixed Y(Z) boundary profile (independent of s, per a dense mesh probe)
+# padded the full 40mm and cut by a diagonal plane regressed 150->300
+# failing layers, in BOTH a wide-overlap variant and a narrowed variant
+# that avoided duplicating the wall band's own territory (identical result
+# either way -- ruling out coincident-face overlap as the cause). G-code
+# analysis at the worst layer (Z~=24.6mm) showed the candidate generating
+# "Top solid infill" + "Bridge infill" toolpath the baseline doesn't have
+# at that height -- i.e. PrusaSlicer is treating something at Z~=25 as an
+# unsupported top surface. Since this appeared identically whether or not
+# the new wedge's own outer boundary touched Z=25, the actual trigger is
+# most likely the WALL BAND's own already-documented flat-top-at-Z=25
+# approximation (see Caveats) becoming a much larger contiguous flat
+# surface once combined with a wedge that (unlike this one) reaches all
+# the way to the wall face at low Z across the full 40mm run -- not
+# something resolved this session. Reverted to this known-good 150-failing
+# version rather than ship a worse one; the real fix for the wedge likely
+# still needs a genuinely 2D-varying profile, but should probably be
+# tackled together with the wall-band zigzag fix (Caveats) rather than in
+# isolation, since this session found they interact. See README Caveat /
+# #34 comment thread for the full diagnosis.
 # =====================================================================
 for side, sign in (("Pos", 1), ("Neg", -1)):
     wedge_sections = []
     WEDGE = [
         # (s, y_outer(wall face), y_inner(reach toward center), z_bottom, z_top)
-        (2.0, outer_half_width, 20.0, 0.0, 80.0),
-        (35.0, outer_half_width, 50.0, 0.0, 20.0),
+        (0.0, outer_half_width, 13.0, 0.0, 83.0),
+        (3.0, outer_half_width, 14.0, 0.0, 83.0),
+        (10.0, outer_half_width, 14.0, 0.0, 53.0),
+        (20.0, outer_half_width, 14.0, 0.0, 34.0),
+        (30.0, outer_half_width, 20.0, 0.0, 22.0),
+        (40.0, outer_half_width, outer_half_width - 0.5, 0.0, 16.67),
     ]
     for i, (s, y_out, y_in_reach, zb, zt) in enumerate(WEDGE):
         y_out_s = sign * y_out
@@ -339,7 +510,7 @@ for side, sign in (("Pos", 1), ("Neg", -1)):
     wedge.Sections = wedge_sections[1:]
     wedge.Ruled = True
     doc.recompute()
-    assert_valid_tip(f"Wedge{side}")
+    assert_valid_tip(f"Wedge{side}", require_single_solid=False)
 
 # =====================================================================
 # G. Rail-boss lobes: 4 lobes, both sides -- additive ears engaging the
@@ -347,9 +518,12 @@ for side, sign in (("Pos", 1), ("Neg", -1)):
 # band, Z 0..25) rather than the previous script's Z 3.5..76.9 range,
 # which the material-map inspection showed spans mostly truss void now.
 # =====================================================================
+# ALobe1/2 Z-range corrected by a second mesh re-inspection: the real feature
+# in this region is a small foot near the floor (Z 4.4-9.4), not a Z 0-24
+# rail matching the wall-band height as previously assumed.
 LOBES = [
-    ("ALobe1", 172.6, 177.5, 3.5, 24.0),
-    ("ALobe2", 181.0, 186.0, 0.0, 24.0),
+    ("ALobe1", 172.6, 177.5, 4.4, 9.4),
+    ("ALobe2", 181.0, 186.0, 4.4, 9.4),
     ("BLobe1", 215.0, 220.7, 74.8, 82.3),
     ("BLobe2", 224.0, 231.4, 74.9, 83.0),
 ]
@@ -371,7 +545,7 @@ for name, s0, s1, z0, z1 in LOBES:
         boss.Reversed = False
         doc.recompute()
         if name != "BLobe1":
-            assert_valid_tip(f"{name}{side}Pad")
+            assert_valid_tip(f"{name}{side}Pad", require_single_solid=False)
         # BLobe1 sits at Z 74.8-82.3, but the climbing RiseBand only reaches
         # ~Z 59-66 at this lobe's s-span (its real measured Z-range is
         # deliberately kept narrow rather than stretched to force a fuse, per
@@ -392,7 +566,7 @@ for name, s0, s1, z0, z1 in LOBES:
             conn_pad.Length = 2.0
             conn_pad.Reversed = False
             doc.recompute()
-            assert_valid_tip(f"BLobe1Connector{side}Pad")
+            assert_valid_tip(f"BLobe1Connector{side}Pad", require_single_solid=False)
 
 # =====================================================================
 # H. Stiffening ribs: 6 repeating diagonal bosses per side, main span only
@@ -436,7 +610,58 @@ for k in range(RIB_COUNT):
         # offset by half its own thickness instead of centered on rib_y).
         rib_pad.SideType = "Symmetric"
         doc.recompute()
-        assert_valid_tip(f"Rib{k}{side}Pad")
+        assert_valid_tip(f"Rib{k}{side}Pad", require_single_solid=False)
+
+# =====================================================================
+# H2. Cap-rail connectors: the cap rail (Z 70.15-85.53) has been a floating
+# member since it was padded in step B/C/D -- a second mesh re-inspection
+# found the real part connects it to the rest of the structure only in
+# narrow ~2-3mm windows, once per rib tooth, roughly where each tooth's
+# climb peaks (RIB_Z_START+RIB_RISE=58.5, the closest real material to the
+# cap rail's underside at 70.15 -- an 11.65mm gap, vs. ~45mm from the wall
+# band). This replaces two earlier over-fill attempts (a full-length cap-to-
+# band panel, then a full-length thin post) that both turned the real open
+# truss void into solid material for the whole 180mm span. One connector per
+# rib tooth per side (6 teeth x 2 sides = 12) is a documented simplification
+# of the real part's irregular tooth-boundary bridging (see README Caveat) --
+# it reproduces the "connects only intermittently" structure without chasing
+# every irregular transition exactly.
+# =====================================================================
+RIB_PEAK_Z = RIB_Z_START + RIB_RISE  # 58.5
+# The connector used to be an axis-aligned box (a YZ_Plane rectangle, one
+# fixed s) bridging straight up from the rib's peak to the cap rail -- the
+# user visually inspected the file and found this reads as an orthogonal jog
+# rather than a continuation of the rib's own diagonal. Fixed: build the
+# connector as a parallelogram on the SAME XZ_Plane sketch pattern as the
+# ribs themselves (same nx,nz spine normal), continuing at the identical
+# slope from the rib's peak edge up into the cap rail, so it reads as one
+# continuous diagonal member, not a rib-then-post shape.
+CONN_DZ = (CAP_BOTTOM + 1.0) - RIB_PEAK_Z  # rise needed to reach 1mm into the cap rail
+CONN_DS = CONN_DZ / (RIB_RISE / RIB_RUN)   # run at the rib's own slope
+
+for k in range(RIB_COUNT):
+    s_start = RIB_FIRST_START + k * RIB_PERIOD
+    s_peak = s_start + RIB_RUN  # tooth's end/peak position
+    half_t = rib_thickness / 2.0
+    pts = [
+        FreeCAD.Vector(s_peak - nx * half_t, RIB_PEAK_Z - nz * half_t, 0),
+        FreeCAD.Vector(s_peak + nx * half_t, RIB_PEAK_Z + nz * half_t, 0),
+        FreeCAD.Vector(s_peak + CONN_DS + nx * half_t, RIB_PEAK_Z + CONN_DZ + nz * half_t, 0),
+        FreeCAD.Vector(s_peak + CONN_DS - nx * half_t, RIB_PEAK_Z + CONN_DZ - nz * half_t, 0),
+    ]
+    for side, sign in (("Pos", 1), ("Neg", -1)):
+        sk = poly_sketch(
+            f"CapConnector{k}{side}Sketch", "XZ_Plane", FreeCAD.Vector(0, 0, sign * -rib_y), pts
+        )
+        pad = body.newObject("PartDesign::Pad", f"CapConnector{k}{side}Pad")
+        pad.Profile = sk
+        pad.Length = rib_width
+        pad.setExpression("Length", "Parameters.rib_width")
+        pad.SideType = "Symmetric"
+        doc.recompute()
+
+# All cap-rail connectors are in -- the whole truss should now be one solid.
+assert_valid_tip("AllCapConnectors")
 
 # =====================================================================
 # I. Fastener holes: 4 holes matching Open End's pegs, at the floor-rise

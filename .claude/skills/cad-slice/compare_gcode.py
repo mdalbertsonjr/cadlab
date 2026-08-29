@@ -28,6 +28,29 @@ G1_RE = re.compile(r"^G1\b")
 COORD_RE = re.compile(r"([XYZE])(-?\d+\.?\d*)")
 FILAMENT_RE = re.compile(r"^; filament used \[mm\]\s*=\s*([\d.]+)")
 TIME_RE = re.compile(r"^; estimated printing time.*=\s*(.+)$")
+STABILITY_RE = re.compile(
+    r"print warning: Detected print stability issues:.*?(?=\n\S|\Z)", re.DOTALL
+)
+
+
+def parse_stability_warning(log_path):
+    """Return PrusaSlicer's 'Detected print stability issues' block from a
+    captured --export-gcode stdout log, or None if absent/file missing. This
+    is a real, empirically-confirmed PrusaSlicer diagnostic (bridging/overhang
+    analysis, on by default) that was previously silently discarded — see
+    SKILL.md. Not itself a pass/fail signal: the reference baseline can
+    legitimately trigger this too (real unsupported bridging is sometimes
+    correct design, not a modeling defect) — only a *difference* between
+    baseline and candidate is actionable."""
+    if not log_path:
+        return None
+    try:
+        with open(log_path, "r", errors="replace") as f:
+            text = f.read()
+    except OSError:
+        return None
+    m = STABILITY_RE.search(text)
+    return m.group(0).strip() if m else None
 
 
 def parse_time_to_seconds(text):
@@ -115,10 +138,14 @@ def pct(a, b):
 
 
 def main():
-    if len(sys.argv) != 3:
+    if len(sys.argv) not in (3, 5):
         print(__doc__)
+        print("Usage: compare_gcode.py <baseline.gcode> <candidate.gcode> "
+              "[<baseline.slice.log> <candidate.slice.log>]")
         return 1
     baseline_path, candidate_path = sys.argv[1], sys.argv[2]
+    baseline_log = sys.argv[3] if len(sys.argv) == 5 else None
+    candidate_log = sys.argv[4] if len(sys.argv) == 5 else None
     base_layers, base_fil, base_time = parse_gcode(baseline_path)
     cand_layers, cand_fil, cand_time = parse_gcode(candidate_path)
 
@@ -126,6 +153,25 @@ def main():
     print(f"Baseline:  {baseline_path}")
     print(f"Candidate: {candidate_path}")
     print()
+
+    # --- Print-stability warning (informational — see parse_stability_warning) ---
+    if baseline_log or candidate_log:
+        base_warn = parse_stability_warning(baseline_log)
+        cand_warn = parse_stability_warning(candidate_log)
+        print("== Print-stability warning (PrusaSlicer, informational) ==")
+        print(f"Baseline:  {'DETECTED' if base_warn else 'none'}")
+        print(f"Candidate: {'DETECTED' if cand_warn else 'none'}")
+        if bool(base_warn) != bool(cand_warn):
+            print("DIFFERENTIAL: this warning appears on only one side — the "
+                  "reconstruction likely introduced (or fixed) a real "
+                  "bridging/overhang problem the other doesn't have.")
+            print(f"  {'Candidate' if cand_warn else 'Baseline'} warning text:")
+            for line in (cand_warn if cand_warn else base_warn).splitlines():
+                print(f"    {line}")
+        elif base_warn:
+            print("Both sides trigger this warning — likely real unsupported "
+                  "bridging in the design itself, not a reconstruction defect.")
+        print()
 
     # --- Aggregate gate ---
     print("== Aggregate gate ==")
