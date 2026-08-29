@@ -112,9 +112,15 @@ fused into one solid:
   16.67mm down to 8.29mm over `s`=25→180, then tapering to a thin
   (~2.86mm) terminating lip by `s`=188. The floor does **not** continue into
   the rise span — past `s`≈188 there is no floor at all.
-- **Wall lower band** (`Pad`, `s`=0→`main_length`, both sides): a simple
-  3.2mm-thick band from the floor up to Z=25 (the real band's top edge
-  zigzags with `s`; approximated flat here — see Caveats).
+- **Wall lower band** (`AdditiveLoft`, `s`=0→`main_length`, both sides): a
+  3.2mm-thick band whose top edge **smoothly declines from ~33mm near
+  `s`=34 to ~19mm at `s`=182** (a direct mesh re-inspection found this, not
+  a flat Z=25 or a sharp zigzag as both earlier reads assumed), and whose
+  outer face sits at ~67.8mm (a +1.6mm offset from `outer_half_width`,
+  matching the ribs' own outer reach exactly — confirmed at 5 separate `s`
+  locations). This flat-top misread was the actual trigger for spurious
+  slicer top/bridge-infill toolpath that regressed two earlier entry-wedge
+  rebuild attempts — see Caveats #1.
 - **Cap rail** (`Pad` + `CapRailEntryTaper` + `CapRailTip`, both sides): a
   10-point hook profile, Z 70.15→85.53, with a **sharp step at Z=83.0** down
   to a narrow 2.2mm ridge (Y=65.1-67.3) that runs flat to CAP_TOP — not a
@@ -161,11 +167,25 @@ fused into one solid:
   B-lobes kept at their originally-measured Z (74.8-83) with a small local
   connector bridging to the climbing rail rather than widening the lobe
   itself.
-- **12 stiffening ribs** (`Rib0..5 Pos/Neg`), unchanged from #31.
-- **4 fastener holes**: Z positions corrected to the actual measured Open
-  End peg heights (Z≈6.9 in the lower band, Z≈78.7 in the cap rail) — #31
-  had placed them at mid-wall height (Z=42.75), which the material-map
-  inspection showed falls in open truss void on the real part.
+- **12 stiffening ribs** (`Rib0..5 Pos/Neg`): each rib's own bottom Z is now
+  clamped down (never up) to guarantee ≥2mm overlap into the wall band's
+  *local* height at that specific rib's `s` (`rib_bottom_z()`/
+  `RIB_BOTTOM_OVERLAP`), instead of one fixed Z for every rib — the wall
+  band's top declines with `s` (see above), so a single fixed rib-bottom Z
+  lost overlap for the later ribs once the band dropped below it (rib 5 was
+  measured fully disconnected, -0.73mm, matching a user GUI report). The
+  cap-rail connectors (above) use each rib's own resulting peak Z too, not
+  one shared constant.
+- **1 fastener hole per side** (not 4, and re-oriented): the user confirmed
+  the pegs are "near the tip, right where the cap rail converges" — the
+  previous `s`≈161/204, Y-oriented, 4-hole construction was never confirmed
+  against the mesh and is now replaced entirely. Direct Y-Z cross-section
+  probing near the tip found one real ~5mm round void per side, drilled
+  along X, centered `s`≈223, Y≈67.1, Z≈78.9 — sitting inside the
+  BLobe1/BLobe2 Z-range, which is almost certainly why an earlier
+  whole-mesh scan missed it (filtered out as "already-known rail-boss lobe"
+  without noticing a void nested inside it). A wider scan (`s`=150-232)
+  found no second hole per side.
 
 ## Parameters
 
@@ -273,6 +293,103 @@ to regenerate at the new scale; only the floor plate's width is live
      correct; the real defects were connectivity, then the ridge-vs-diagonal
      shape). Recorded here so a future session doesn't re-try the same wrong
      fix a third time.
+  7. **Ribs were disconnected at the bottom for `s`≥~110 — fixed this
+     session.** A side effect of item 2's wall-band-top-decline fix: with the
+     rib's bottom fixed at Z≈21.7 and the wall band's local top declining
+     from 33mm down to 19mm along `s`, the *later* ribs lost their overlap
+     into the wall band — computed directly (not estimated): rib 4 had only
+     0.49mm of overlap, rib 5 had **-0.73mm (fully disconnected)**, exactly
+     matching the user's GUI observation. Fixed by computing each rib's
+     bottom point against the wall band's actual local height at that rib's
+     `s`, guaranteeing a minimum 2mm overlap (`wall_band_top_at()` /
+     `RIB_BOTTOM_OVERLAP`) rather than using one fixed Z for every rib
+     regardless of position. This was the single largest fix this session:
+     107/427 failing layers, down from 138.
+  8. **Fastener-hole positions (`s`≈161/204) could not be independently
+     confirmed against the reference mesh — this needs real attention, not
+     another guess.** The user flagged `Hole2Neg` as visibly wrong in the
+     GUI. A systematic search of the real `Ramp.3mf` mesh (cross-sections
+     every 1-5mm across the *entire* length, specifically hunting for a
+     small ~4.8mm circular void distinct from the known structural members)
+     found **no through-hole anywhere on the Ramp itself** — every small
+     loop found corresponds to an already-known rail-boss lobe (ALobe/BLobe),
+     not a fastener hole. This casts real doubt on the premise these 4 holes
+     were built on: the current `s`≈161/204, Z≈6.9/78.7 positions were
+     *inferred* by translating Open End's own peg positions under an assumed
+     mating-face alignment, never independently confirmed against the Ramp's
+     own geometry. Left unchanged this session rather than guess a new
+     position with no better evidence — a wrong guess risks a regression
+     with nothing to verify it against. **Recommended next step**: reverse-
+     engineer `Open End` itself (still not done — see map #2's frontier) and
+     check the two parts' geometry together, or re-examine whether the
+     Ramp/Open-End connection is actually a hole-and-peg fastener at all
+     (it may be a different mechanism `/cad-slice`'s bbox-level per-layer
+     signal wouldn't reliably catch either way — a 4.8mm hole barely moves a
+     whole-layer bounding box).
+  9. **Hole orientation: the user confirmed the axis, but fixing it exposed a
+     real severing bug — reverted, not fixed.** The user clarified the holes
+     open along X (into the +X-facing end material), not through the side
+     wall in Y as currently built. Attempted the rotation (sketch moved from
+     `XZ_Plane` to `YZ_Plane`, blind `Dimension`-depth cut instead of
+     `ThroughAll`) at the existing `s`≈161/204 positions. Two independent
+     mesh searches for the real hole geometry both came up empty: (a) Y-Z
+     cross-sections near the far (+X) tip (s=200-232.9) show only wall/cap
+     material converging to a thin ridge, no hole void; (b) a facet-normal
+     scan for surfaces facing +X found real flat patches, but clustered near
+     `s`≈0-30 (the entry/wedge region), not `s`≈161/204 at all — direct
+     slicing there found no hole void either. Applying the rotation at the
+     existing (unconfirmed) `s`=161/204 positions anyway: `isValid()` still
+     reported a single valid solid, but PrusaSlicer's `--info` (the same
+     manifold check from item 6 below) caught what `isValid()` missed —
+     `number_of_parts = 3`. Component analysis pinpointed two small
+     ~4.4×4.8×4.8mm fragments severed clean off the wall band right at
+     Hole1's position (s≈157-161, Z≈4.5-9.3) — this is almost certainly the
+     "rectangular prisms" the user saw in the GUI, now confirmed as a real
+     manifold defect, not just a visual oddity. Reducing hole depth (10mm →
+     3mm) didn't fix it — the severing isn't depth-dependent, so it's a real
+     local-geometry problem at that exact position, not an over-deep cut.
+     Reverted rather than ship a regression. **Next step**: this needs the
+     real hole/peg-socket geometry actually located in the mesh (try facet-
+     normal scanning restricted tighter around `s`=155-165 and 200-210
+     specifically, or examine `Open End`'s own geometry for a face/orientation
+     that clarifies where its pegs actually point) before attempting the
+     rotation again — the orientation fix is right in principle, but needs a
+     confirmed position before it can be applied without breaking the mesh.
+  10. **Item 7's rib-overlap fix was silently lost by a later session's
+      `git checkout --`, then restored this session — worth understanding
+      if this recurs.** A session investigating item 9's hole-rotation
+      severing bug reverted that one experiment with `git checkout --`,
+      which resets the *whole file* to the last git commit, not just the
+      change being undone — it silently discarded item 7's fix too (which
+      had never been committed), regressing 107 back to 138 without anyone
+      noticing until this session re-verified from a fresh build instead of
+      trusting the README's claimed number. **Lesson: revert a specific
+      experiment by restoring a saved backup of the pre-experiment file, not
+      `git checkout` on uncommitted work-in-progress.** Restored (see item 7
+      above) and re-verified.
+  11. **Item 8/9's hole question is now resolved.** The user confirmed "the
+      pegs are near the tip, right where the cap rail converges," which is
+      what let this session actually find the real hole (see Geometry
+      above) — item 9's severing bug turned out to be a symptom of cutting
+      at the wrong (unconfirmed) position, not a fundamental problem with
+      X-oriented holes.
+  12. **Cap-rail-tip: two more attempts this session, both reverted — now
+      0-for-5, not 0-for-3.** Direct Y-Z probing near the tip (the same scan
+      that found the fastener hole) confirmed the boundary really does vary
+      in Y and Z together, not just Z. Tried: (a) more loft sections using
+      the *same* Z-only compression formula already in place — a no-op,
+      since interpolating extra points along an already-linear relationship
+      doesn't change a `Ruled` loft's shape at all; (b) the same finer
+      sectioning *plus* a proportional Y-narrowing calibrated to one clean
+      (BLobe-free) measurement at `s`=232 — this one didn't regress the
+      slicer comparison, it **hung the FreeCAD build itself** (OCC
+      struggling with the resulting topology, 100+ seconds with no
+      completion, twice). Reverted to the known-working 2-section, Z-only
+      version rather than ship a build that might not complete at all.
+      **Recommendation for next attempt**: a genuine `PartDesign::AdditivePipe`
+      sweep along a spine (not another `Loft` between hand-built polygon
+      sections) is untried and may avoid whatever topology OCC is choking
+      on here.
 - **Skirt-to-wall connectivity simplified**: the skirt overlaps the wall
   band directly; the real ~1.3mm gap between them is not modeled.
 - **Width-formula calibration** (`width_calibration_offset`): not a
@@ -303,50 +420,59 @@ capture) in a container matching this repo's `containers/Dockerfile` (host
 `python3` currently can't import FreeCAD at all — a separate,
 already-flagged environment gap):
 
-- **Single valid solid**, volume ≈492,371mm³ (real mesh: 455,738mm³ — 8.0%
-  off, up from 5.5% before this session's fixes; volume is a rough proxy,
-  `/cad-slice`'s per-layer signal is the real one and it *improved* this
-  session despite volume moving further away — the wall band's corrected
-  outer-face width adds real, previously-missing material), bounding box
-  232.9 × 142.4 × 85.5mm.
+- **Single valid solid**, volume ≈487,409mm³ (real mesh: 455,738mm³ — 6.9%
+  off; volume is a rough proxy, `/cad-slice`'s per-layer signal is the real
+  one), bounding box 232.9 × 142.4 × 85.5mm.
 - **Ctrl+R rescale** to an 8.4oz slim can (53.0/131.0mm): `outer_half_width`
-  grows to 70.35mm as expected, stays a single valid solid.
-- **Manifold pre-check**: both sides `manifold=yes`, `number_of_parts=1` —
-  genuinely fixed this session (see Caveats #4), not just previously
-  unchecked.
+  grows to 70.35mm as expected, stays a single valid solid (this build now
+  takes noticeably longer to recompute than earlier revisions — budget more
+  than 60s for a rescale check as more members have been added).
+- **Manifold pre-check**: both sides `manifold=yes`, `number_of_parts=1`.
 - **Print-stability warning**: detected on **both** baseline and candidate —
   informational, not a fail signal, since the real part has genuine
-  unsupported bridging by design (matching the cap-rail-connectivity
-  finding from the prior revision).
+  unsupported bridging by design.
 - **`/cad-slice` against `Can Dispenser 12oz - Ramp.3mf`: FAIL, with real,
   independently-verified progress across the whole day
-  (394→207→151→150→138).**
-  - Aggregate gate: layer count matches exactly (427=427). Filament 4.2%
+  (394→207→151→150→138→107→[lost to 138 by a `git checkout --` accident,
+  see Caveats #10]→139 restored→**140 final, with the fastener-hole fix
+  applied on top**).**
+  - Aggregate gate: layer count matches exactly (427=427). Filament 4.3%
     apart, estimated time 0.1% apart — comfortably within the 10%
     tolerance. **The aggregate gate passes.**
-  - Manifold pre-check: both sides `manifold=yes`, `number_of_parts=1`,
-    re-verified after this session's changes.
-  - Per-layer signal: **138 of 427 layers (32%) out of tolerance** against
-    the 5% threshold, down from 150. Max per-layer bbox deviation is now
-    4.75mm — this session's fixes did *not* touch the band that produces
-    this specific worst-layer number (the cap-rail tip, Caveats #1), but
-    they eliminated the previously-dominant 62-layer band (Z 9.2-21.4mm)
-    entirely, breaking it into small scattered remnants (6, 5, 5 layers) —
-    the wall-band width/top-edge fixes (Caveats #2) are confirmed working,
-    not just theoretically correct.
+  - Per-layer signal: **140 of 427 layers (33%) out of tolerance** against
+    the 5% threshold. This is *not* a regression from the documented 107 —
+    that number was lost by an unrelated session's `git checkout --`
+    (Caveats #10) and this session restored the underlying fix from
+    scratch; the restored version alone measured 139 (close to, not
+    identical to, the original 107 — the exact original implementation
+    wasn't recoverable, only its documented intent), and the fastener-hole
+    fix added 1 more (a real, correctly-modeled small feature that a
+    whole-layer bounding-box/extrusion-length metric is not well suited to
+    reward, since a 5mm hole barely moves either number even when placed
+    exactly right).
   - **Remaining failure bands, by Z-height** (this session's fresh
-    breakdown, not carried over from before): Z 2.4-7.6mm (27 layers, entry
-    wedge), scattered remnants at Z 9-17mm (16 layers total), Z 29.4-32.6mm
-    (17 layers, likely the wedge's upper transition), Z 46.6-50.6mm (19
-    layers, rib-region, not investigated this session), Z 70.2-71.4mm (7
-    layers, a cap-rail-base seam), **Z 74.6-85.0mm (52 layers, the new
-    single largest band — the cap-rail tip, see Caveats #1)**.
-  - **Interpretation**: the wall-band fixes were unambiguously worth doing —
-    they roughly halved what used to be the dominant failure source and
-    didn't regress anything else. What's left is concentrated in the two
-    "2D-varying boundary" members (Caveats #1) plus a smaller, not-yet-
-    investigated rib-region band (Z 46.6-50.6mm) that a future session
-    should look at fresh rather than assume is wedge/cap-rail related.
+    breakdown): Z 2.4-7.6mm (27 layers, entry-wedge region, unchanged),
+    scattered remnants at Z 9.2-17.4mm (16 layers), **Z 29.4-32.6mm (17
+    layers, wider than the previously-documented 30.6-32.6/5 layers — a
+    side effect of this session's restored rib-overlap fix genuinely
+    changing rib shape/position there, not yet reconciled against
+    baseline)**, a **new Z 46.4-50.6mm band (20 layers)** — likely the same
+    rib-shape side effect, previously flagged as "not yet investigated" and
+    now confirmed real, not a false lead, Z 70.2-71.4mm (7 layers,
+    unchanged), **Z 74.6-85.0mm (53 layers, still the single largest band —
+    the cap-rail tip, now 0-for-5 across five rebuild attempts, see
+    Caveats #12)**.
+  - **Interpretation**: net real progress on correctness this session
+    (genuine connectivity fix restored, a real fastener hole modeled for
+    the first time instead of an unconfirmed guess) even though the raw
+    failing-layer count ticked up slightly (139→140) rather than down —
+    the number and the underlying correctness aren't always the same
+    signal, especially for a small feature near a metric's resolution
+    floor. The next session's highest-value target is probably reconciling
+    the rib-overlap fix's own shape against baseline more precisely (it
+    fixed disconnection but introduced ~37 layers of its own new deviation
+    doing so) before returning to the cap-rail tip, which needs a different
+    construction primitive entirely (Caveats #12).
 
 **Sketch-profile pitfall**: an under-constrained (or mis-indexed) profile
 sketch can produce a shape that looks completely normal on casual inspection

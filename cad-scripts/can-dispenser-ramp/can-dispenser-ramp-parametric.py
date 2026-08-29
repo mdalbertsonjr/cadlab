@@ -374,6 +374,16 @@ for side, sign in (("Pos", 1), ("Neg", -1)):
     # compress hook_local's own height range down to [tip_bottom_end, CAP_TOP]
     # instead, preserving all 7 points and their correspondence -- the hook
     # shape shrinks toward the tip rather than being replaced by a rectangle.
+    # This session tried both a finer-sectioned loft and a combined Y+Z
+    # compression here (per the "2D-varying boundary" diagnosis) -- both
+    # hung the FreeCAD build (OCC struggling with the resulting topology,
+    # not a script bug) and were reverted rather than risk shipping a build
+    # that doesn't complete at all. Reverted to the known-working 2-section,
+    # Z-only compression below. This member's 0-for-3 track record on
+    # rebuild attempts is now 0-for-5; the real fix likely needs a
+    # different construction primitive entirely (e.g. a genuine Sweep/Pipe
+    # along a spine, not a Loft between hand-built polygon sections) rather
+    # than another loft-section variant.
     tip_bottom_end = CAP_TOP - 1.0
     tip_hook_local = [
         (y, tip_bottom_end + (z - CAP_BOTTOM) / (CAP_TOP - CAP_BOTTOM) * (CAP_TOP - tip_bottom_end))
@@ -573,28 +583,65 @@ for name, s0, s1, z0, z1 in LOBES:
 # (measured -- do not extend into the rise span, which has its own
 # climbing rails instead). Unchanged from #31 except rib_y is unaffected
 # by the wall-thickness revision (independently measured).
+#
+# RESTORED (was accidentally lost by a `git checkout --` revert in a prior
+# session that meant to discard an unrelated hole-rotation experiment but
+# reset the whole file to the last git commit instead, silently dropping
+# this fix along with it -- 107 failing layers regressed back to 138): the
+# wall band's top edge declines with `s` (WALL_BAND_PROFILE, section B/C/D
+# above), so a single fixed RIB_Z_START=23.0 for every rib loses overlap
+# for the later ribs once the band's local top drops below ~25mm -- direct
+# measurement found rib 4 had only 0.49mm of overlap and rib 5 was fully
+# disconnected (-0.73mm), matching the user's GUI observation. Fix: clamp
+# each rib's own bottom Z down (never up -- the early ribs already have
+# plenty of overlap and shouldn't move) to guarantee a minimum 2mm overlap
+# into the wall band's actual local height at that specific rib's `s`.
 # =====================================================================
 RIB_RUN = 21.0
 RIB_RISE = 35.5
 RIB_PERIOD = 22.83
 RIB_FIRST_START = 34.0
 RIB_Z_START = 23.0
+RIB_BOTTOM_OVERLAP = 2.0
 RIB_COUNT = 6
 rib_thickness = sheet.get("rib_thickness")
 rib_y = sheet.get("rib_y")
+
+
+def wall_band_top_at(s):
+    """Linear interpolation of WALL_BAND_PROFILE's (s, top_z) samples."""
+    pts = WALL_BAND_PROFILE
+    if s <= pts[0][0]:
+        return pts[0][1]
+    if s >= pts[-1][0]:
+        return pts[-1][1]
+    for (s0, z0), (s1, z1) in zip(pts, pts[1:]):
+        if s0 <= s <= s1:
+            t = (s - s0) / (s1 - s0)
+            return z0 + t * (z1 - z0)
+    raise RuntimeError(f"wall_band_top_at({s}): unreachable")
+
+
+def rib_bottom_z(s_start):
+    return min(RIB_Z_START, wall_band_top_at(s_start) - RIB_BOTTOM_OVERLAP)
+
+
 rib_width = sheet.get("rib_width")
 
 theta = math.atan2(RIB_RISE, RIB_RUN)
 nx, nz = -math.sin(theta), math.cos(theta)  # unit normal to the spine
 
+rib_z_starts = []  # per-rib bottom Z, needed again by the connectors below
 for k in range(RIB_COUNT):
     s_start = RIB_FIRST_START + k * RIB_PERIOD
+    z_start = rib_bottom_z(s_start)
+    rib_z_starts.append(z_start)
     half_t = rib_thickness / 2.0
     pts = [
-        FreeCAD.Vector(s_start - nx * half_t, RIB_Z_START - nz * half_t, 0),
-        FreeCAD.Vector(s_start + nx * half_t, RIB_Z_START + nz * half_t, 0),
-        FreeCAD.Vector(s_start + RIB_RUN + nx * half_t, RIB_Z_START + RIB_RISE + nz * half_t, 0),
-        FreeCAD.Vector(s_start + RIB_RUN - nx * half_t, RIB_Z_START + RIB_RISE - nz * half_t, 0),
+        FreeCAD.Vector(s_start - nx * half_t, z_start - nz * half_t, 0),
+        FreeCAD.Vector(s_start + nx * half_t, z_start + nz * half_t, 0),
+        FreeCAD.Vector(s_start + RIB_RUN + nx * half_t, z_start + RIB_RISE + nz * half_t, 0),
+        FreeCAD.Vector(s_start + RIB_RUN - nx * half_t, z_start + RIB_RISE - nz * half_t, 0),
     ]
     for side, sign in (("Pos", 1), ("Neg", -1)):
         sk = poly_sketch(
@@ -627,7 +674,6 @@ for k in range(RIB_COUNT):
 # it reproduces the "connects only intermittently" structure without chasing
 # every irregular transition exactly.
 # =====================================================================
-RIB_PEAK_Z = RIB_Z_START + RIB_RISE  # 58.5
 # The connector used to be an axis-aligned box (a YZ_Plane rectangle, one
 # fixed s) bridging straight up from the rib's peak to the cap rail -- the
 # user visually inspected the file and found this reads as an orthogonal jog
@@ -636,18 +682,22 @@ RIB_PEAK_Z = RIB_Z_START + RIB_RISE  # 58.5
 # ribs themselves (same nx,nz spine normal), continuing at the identical
 # slope from the rib's peak edge up into the cap rail, so it reads as one
 # continuous diagonal member, not a rib-then-post shape.
-CONN_DZ = (CAP_BOTTOM + 1.0) - RIB_PEAK_Z  # rise needed to reach 1mm into the cap rail
-CONN_DS = CONN_DZ / (RIB_RISE / RIB_RUN)   # run at the rib's own slope
-
+#
+# Peak Z now varies per rib (rib_z_starts[k] + RIB_RISE) since rib_bottom_z()
+# was restored above -- each connector's own rise/run to reach the cap rail
+# is computed from its own rib's actual peak, not one shared constant.
 for k in range(RIB_COUNT):
     s_start = RIB_FIRST_START + k * RIB_PERIOD
     s_peak = s_start + RIB_RUN  # tooth's end/peak position
+    rib_peak_z = rib_z_starts[k] + RIB_RISE
+    conn_dz = (CAP_BOTTOM + 1.0) - rib_peak_z  # rise needed to reach 1mm into the cap rail
+    conn_ds = conn_dz / (RIB_RISE / RIB_RUN)   # run at the rib's own slope
     half_t = rib_thickness / 2.0
     pts = [
-        FreeCAD.Vector(s_peak - nx * half_t, RIB_PEAK_Z - nz * half_t, 0),
-        FreeCAD.Vector(s_peak + nx * half_t, RIB_PEAK_Z + nz * half_t, 0),
-        FreeCAD.Vector(s_peak + CONN_DS + nx * half_t, RIB_PEAK_Z + CONN_DZ + nz * half_t, 0),
-        FreeCAD.Vector(s_peak + CONN_DS - nx * half_t, RIB_PEAK_Z + CONN_DZ - nz * half_t, 0),
+        FreeCAD.Vector(s_peak - nx * half_t, rib_peak_z - nz * half_t, 0),
+        FreeCAD.Vector(s_peak + nx * half_t, rib_peak_z + nz * half_t, 0),
+        FreeCAD.Vector(s_peak + conn_ds + nx * half_t, rib_peak_z + conn_dz + nz * half_t, 0),
+        FreeCAD.Vector(s_peak + conn_ds - nx * half_t, rib_peak_z + conn_dz - nz * half_t, 0),
     ]
     for side, sign in (("Pos", 1), ("Neg", -1)):
         sk = poly_sketch(
@@ -664,34 +714,44 @@ for k in range(RIB_COUNT):
 assert_valid_tip("AllCapConnectors")
 
 # =====================================================================
-# I. Fastener holes: 4 holes matching Open End's pegs, at the floor-rise
-# end. Z positions are the measured Open End peg heights -- #31 placed
-# these at mid-wall (Z=42.75), which the material-map inspection showed
-# falls in open truss void; the real peg heights land in the lower band
-# (Z~6.9) and the cap rail (Z~78.7).
+# I. Fastener hole: re-measured this session -- the previous s=161/204,
+# Y-oriented, 4-hole construction is replaced entirely. The user confirmed
+# "the pegs are near the tip, right where the cap rail converges" -- the
+# old positions were never actually confirmed against the mesh (see README
+# Caveats #8/#9). Direct Y-Z plane slicing (perpendicular to X) near the tip
+# found a genuine small nested void distinct from every known member: a
+# consistent Y[64.60,69.60] (5.0mm) x Z[76.43,81.43] (5.0mm) loop from
+# s~=219 to s~=227, centered at Y~=67.1, Z~=78.9 -- a round hole drilled
+# along X, sized almost exactly to fastener_hole_diameter (4.8mm). It sits
+# inside the BLobe1/BLobe2 rail-boss Z-range (74.8-83), which is almost
+# certainly why an earlier whole-mesh scan missed it -- that loop was
+# filtered out as "already-known rail-boss lobe" without noticing a
+# distinct void nested inside it. A wider scan (s=150-232, every 3mm) found
+# no second hole: the only other small-loop candidates matched already-known
+# members exactly (ALobe1/2's own Z 4.4-9.4 range at s~177-183, the cap-rail
+# tip's own narrowing taper at s~231) -- **only ONE hole per side**, not the
+# previously-assumed two-position/four-hole layout.
 # =====================================================================
-HOLES = [
-    ("Hole1Pos", 161.0, 1, 6.9),
-    ("Hole1Neg", 161.0, -1, 6.9),
-    ("Hole2Pos", 204.0, 1, 78.7),
-    ("Hole2Neg", 204.0, -1, 78.7),
-]
+HOLE_S = 223.0
+HOLE_Y = 67.1
+HOLE_Z = 78.9
 
-for name, s, sign, hz in HOLES:
-    hole_y = outer_half_width - wall / 2.0
+for side, sign in (("Pos", 1), ("Neg", -1)):
+    name = f"Hole{side}"
     sk = body.newObject("Sketcher::SketchObject", f"{name}Sketch")
-    # XZ_Plane, not YZ_Plane: a Hole feature drills perpendicular to its sketch
-    # plane, and the hole must go THROUGH the wall (the Y direction), not
-    # lengthwise down the ramp -- XZ_Plane's normal is Y.
-    sk.AttachmentSupport = [(doc.getObject("XZ_Plane"), "")]
+    # YZ_Plane, not XZ_Plane: a Hole feature drills perpendicular to its
+    # sketch plane, and this hole goes along X (into the +X-facing material
+    # near the tip), not through the side wall in Y like the old, unconfirmed
+    # construction assumed.
+    sk.AttachmentSupport = [(doc.getObject("YZ_Plane"), "")]
     sk.MapMode = "FlatFace"
-    sk.AttachmentOffset = FreeCAD.Placement(FreeCAD.Vector(0, 0, sign * -hole_y), FreeCAD.Rotation())
-    center = FreeCAD.Vector(s, hz, 0)
+    sk.AttachmentOffset = FreeCAD.Placement(FreeCAD.Vector(0, 0, HOLE_S), FreeCAD.Rotation())
+    center = FreeCAD.Vector(sign * HOLE_Y, HOLE_Z, 0)
     circ = Part.Circle(center, FreeCAD.Vector(0, 0, 1), 2.4)
     sk.addGeometry(circ, False)
     sk.addConstraint(Sketcher.Constraint("Radius", 0, 2.4))
-    sk.addConstraint(Sketcher.Constraint("DistanceX", 0, 3, s))
-    sk.addConstraint(Sketcher.Constraint("DistanceY", 0, 3, hz))
+    sk.addConstraint(Sketcher.Constraint("DistanceX", 0, 3, sign * HOLE_Y))
+    sk.addConstraint(Sketcher.Constraint("DistanceY", 0, 3, HOLE_Z))
     sk.setExpression("Constraints[0]", "Parameters.fastener_hole_diameter / 2")
     doc.recompute()
     if not sk.FullyConstrained:
