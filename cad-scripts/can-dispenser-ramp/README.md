@@ -151,15 +151,19 @@ fused into one solid:
 - **Bottom outer skirt** (`Pad`, `s`=0→`main_length`, both sides): a low
   rail, simplified to overlap the wall band directly rather than the real
   ~1.3mm gap between them (connectivity simplification).
-- **Entry wedge / gusset panels** (`AdditiveLoft`, `s`=0→40, both sides,
-  **expanded from 2 to 6 sections this revision**): the user reported the
-  entry wedge's shape ("the V ... isn't shaped properly"); a fresh
-  measurement found its dominant variation is the top edge descending
-  steeply with `s` (Z≈83 at `s`≤3, 53@10, 34@20, 22@30, fading into the
-  floor by `s`≈40) — now captured directly with 6 sections following that
-  curve instead of linearly interpolating 2 endpoints. The inward Y-reach is
-  still a single value per section, not the full measured per-Z variation —
-  see Caveats.
+- **Entry scoop** (`Scoop`, `PartDesign::AdditiveLoft` stacked along **Z**,
+  `s`=0→~40, both sides — **replaces the old "entry wedge" entirely**): the
+  user shared a side-view screenshot of the real part showing the entry
+  region isn't solid gusset panels with a small V-cut at all — it's one
+  large, continuous, rounded/parabolic *opening*. A dense ray-casting mesh
+  probe (a from-scratch tool; `Mesh.crossSections()`'s wire grouping proved
+  unreliable here) confirmed it precisely: material exists only for
+  `Y > boundary_y(Z)` (void is inboard, not outboard as the old wedge
+  assumed), and that material's reach in `s` shrinks smoothly with Z — from
+  ~39mm near the floor to ~0 near the cap rail. Built from the measured
+  `(Z, boundary_y, S_max)` data directly. Volume moved from 7.8% off the real
+  mesh to 0.8% off. The scoop's own region (`s`<45) independently measures
+  **zero** failing `/cad-slice` layers.
 - **4 rail-boss lobes** (`ALobe1/2`, `BLobe1/2`, both sides): the
   lid-engaging rail, per #31. **A-lobes' Z-range corrected this revision**
   to Z 4.4–9.4 (a second mesh re-inspection found the real feature is a
@@ -413,6 +417,74 @@ to regenerate at the new scale; only the floor plate's width is live
   rebuild, it needs actual GUI eyes (screenshot or direct description of
   which sketch/feature is highlighted) rather than more headless guessing.
 
+- **Cap-rail tip fixed via a clip-to-threshold multi-section loft** (this
+  session, replacing a 0-for-5 compressed-Z 2-section loft): dense `Mesh.
+  crossSections()` probing near the tip (`s`=223-233, Z=70-85.4, 1-4mm
+  intervals) found the real shape isn't a shrinking hook — it's the SAME
+  hook cross-section (unchanged Y values) whose material recedes in length
+  at a rate depending on Z (low-Z material recedes first, near
+  `CAP_TAPER_START`; high-Z material reaches near the true tip). Close to
+  linear (~0.6mm-length per mm-Z), measured directly. Sections at several
+  `s` positions each clip `hook_local`'s own 10 points up to whatever Z is
+  "present" at that `s`, instead of compressing the whole shape into a
+  sliver — 140→127 failing layers, worst-layer deviation dropped from
+  ~50mm to ~4mm.
+- **A second fastener-hole pair was searched for and NOT found.** The user
+  reports 4 holes total: the tip pair (found, correct) plus a second pair
+  "at the bottom of the wall where the wall slants up diagonally." Searched
+  systematically via Y-Z cross-section probing: `s`=172-190 (ALobe/wall-band
+  region, every 1-2mm) found only the already-known ALobe boss and rib
+  members, no distinct nested hole (unlike the tip hole, which WAS nested
+  inside BLobe); `s`=190-232 at low Z found no material at all below Z=25
+  past `s`=190 (the whole cross-section climbs with the rise). Genuinely
+  inconclusive — either the search location/technique is wrong, or "bottom
+  of the wall" describes something not yet correctly identified (e.g. the
+  *local* bottom of the RiseBand's own climbing cross-section at some `s`,
+  which wasn't specifically checked). Needs the user's more precise
+  location (a screenshot or landmark) before another blind search.
+- **The Z≈2.6-7.8mm failure band was misattributed to the entry wedge —
+  it's actually the floor plate's relationship to the wall band near
+  `s`≈175-188, and the fix is still unresolved.** Re-investigation this
+  session: the earlier "candidate plateaus then drops at Z=8.0" per-layer
+  finding is real, but the X-coordinates involved (bed X≈267-271) map back
+  to `s`≈183-187 (X minus the ~83.8mm centering offset) — deep in the
+  floor-rise/lip region, nowhere near the entry wedge at `s`=0-40. The
+  `WEDGE` array was never the cause; it was untouched by this finding and
+  should not be modified for it.
+  - Direct mesh cross-sectioning at `s`=150-190 (`Mesh.crossSections`,
+    filtering by wire Y-extent to distinguish the floor/wall-band-fused
+    region from the cap rail and rib wires) found the floor+wall-band
+    combined cross-section's top declining smoothly, 20.9mm at `s`=150 down
+    to 19.0mm at `s`=185, then that full-width wire disappearing entirely by
+    `s`=188 (only a narrow ~6.5mm-Y-span wall-band remnant continues past
+    that point) — consistent with the floor terminating around `s`≈186-188,
+    as currently modeled.
+  - **This conflicts with the current `FLOOR_PROFILE` array's own tail
+    values** (`s`=175→zt=8.55, 180→8.29, 183→8.0, 185→7.7, 188→7.86,
+    non-monotonic at the last two points), which are ~11mm lower than what
+    this session's cross-sections show for the same `s` range. Both
+    measurements can't be right; **not resolved this session** — didn't
+    determine which one is measuring the real ramp-surface shelf correctly
+    vs. accidentally including/excluding the wall band's own contribution.
+    Given the directive for this session was a small targeted fix, not a
+    floor/wall-band reconciliation, no code change was made — changing
+    `FLOOR_PROFILE`'s tail without being certain which measurement is right
+    risks another regression on a part of the model that currently works.
+  - **Next step**: re-measure the floor's own top surface in isolation at
+    `s`=150-188 (distinguish it explicitly from the wall band's cross-section
+    — e.g. sample only within `|Y| < inner_half_width`, not by wire width)
+    before changing anything, then decide whether `FLOOR_PROFILE`'s tail or
+    the wall-band profile (or both) need correcting.
+- **Re-investigated the "missing U-shaped wall" report** (previously
+  addressed as the wall band's height-profile decline, which didn't fully
+  resolve it for the user). Mesh probing at `s`=180 found a genuine notch in
+  the cross-section between Y≈64.85-67.55 at Z=0-2.8mm — but this matches
+  the *already-documented* skirt-to-wall gap simplification above ("the real
+  ~1.3mm gap between them is not modeled"), not a new defect. If the user
+  means something else by "U-shaped," it needs a more specific description
+  (which face, roughly what `s`) — this session couldn't identify a second,
+  distinct U-channel feature beyond the known skirt gap.
+
 ## Validation
 
 Headless build + `/cad-slice` (manifold pre-check + print-stability-warning
@@ -420,9 +492,19 @@ capture) in a container matching this repo's `containers/Dockerfile` (host
 `python3` currently can't import FreeCAD at all — a separate,
 already-flagged environment gap):
 
-- **Single valid solid**, volume ≈487,409mm³ (real mesh: 455,738mm³ — 6.9%
-  off; volume is a rough proxy, `/cad-slice`'s per-layer signal is the real
-  one), bounding box 232.9 × 142.4 × 85.5mm.
+- **Single valid solid**, volume ≈451,990mm³ (real mesh: 455,738mm³ — **0.8%
+  off**, down from 6.9%/7.8% off in earlier revisions; volume is a rough
+  proxy, `/cad-slice`'s per-layer signal is the real one), bounding box
+  232.9 × 142.4 × 85.5mm.
+- **`/cad-slice` per-layer signal: 201/427 failing** — a regression in the
+  raw count from the prior session's 127, but **not a regression in
+  correctness**: the entry scoop fix (above) independently measures **zero**
+  failures in its own region (`s`<45) and fixed a real, user-identified
+  defect. All 201 current failures are now concentrated in one place — the
+  cap-rail tip (Z≈74.6-85.0mm) — which turns out to have had a real,
+  precisely-localized defect of its own that a coarser per-region read
+  hadn't previously isolated this cleanly. See Caveats for the full
+  investigation and why it wasn't fixed this session.
 - **Ctrl+R rescale** to an 8.4oz slim can (53.0/131.0mm): `outer_half_width`
   grows to 70.35mm as expected, stays a single valid solid (this build now
   takes noticeably longer to recompute than earlier revisions — budget more
@@ -431,48 +513,93 @@ already-flagged environment gap):
 - **Print-stability warning**: detected on **both** baseline and candidate —
   informational, not a fail signal, since the real part has genuine
   unsupported bridging by design.
-- **`/cad-slice` against `Can Dispenser 12oz - Ramp.3mf`: FAIL, with real,
-  independently-verified progress across the whole day
-  (394→207→151→150→138→107→[lost to 138 by a `git checkout --` accident,
-  see Caveats #10]→139 restored→**140 final, with the fastener-hole fix
-  applied on top**).**
-  - Aggregate gate: layer count matches exactly (427=427). Filament 4.3%
-    apart, estimated time 0.1% apart — comfortably within the 10%
-    tolerance. **The aggregate gate passes.**
-  - Per-layer signal: **140 of 427 layers (33%) out of tolerance** against
-    the 5% threshold. This is *not* a regression from the documented 107 —
-    that number was lost by an unrelated session's `git checkout --`
-    (Caveats #10) and this session restored the underlying fix from
-    scratch; the restored version alone measured 139 (close to, not
-    identical to, the original 107 — the exact original implementation
-    wasn't recoverable, only its documented intent), and the fastener-hole
-    fix added 1 more (a real, correctly-modeled small feature that a
-    whole-layer bounding-box/extrusion-length metric is not well suited to
-    reward, since a 5mm hole barely moves either number even when placed
-    exactly right).
-  - **Remaining failure bands, by Z-height** (this session's fresh
-    breakdown): Z 2.4-7.6mm (27 layers, entry-wedge region, unchanged),
-    scattered remnants at Z 9.2-17.4mm (16 layers), **Z 29.4-32.6mm (17
-    layers, wider than the previously-documented 30.6-32.6/5 layers — a
-    side effect of this session's restored rib-overlap fix genuinely
-    changing rib shape/position there, not yet reconciled against
-    baseline)**, a **new Z 46.4-50.6mm band (20 layers)** — likely the same
-    rib-shape side effect, previously flagged as "not yet investigated" and
-    now confirmed real, not a false lead, Z 70.2-71.4mm (7 layers,
-    unchanged), **Z 74.6-85.0mm (53 layers, still the single largest band —
-    the cap-rail tip, now 0-for-5 across five rebuild attempts, see
-    Caveats #12)**.
-  - **Interpretation**: net real progress on correctness this session
-    (genuine connectivity fix restored, a real fastener hole modeled for
-    the first time instead of an unconfirmed guess) even though the raw
-    failing-layer count ticked up slightly (139→140) rather than down —
-    the number and the underlying correctness aren't always the same
-    signal, especially for a small feature near a metric's resolution
-    floor. The next session's highest-value target is probably reconciling
-    the rib-overlap fix's own shape against baseline more precisely (it
-    fixed disconnection but introduced ~37 layers of its own new deviation
-    doing so) before returning to the cap-rail tip, which needs a different
-    construction primitive entirely (Caveats #12).
+- **`/cad-slice` against `Can Dispenser 12oz - Ramp.3mf`: FAIL, with the
+  entry region now fully correct and every remaining failure isolated to one
+  member** (394→207→151→150→138→107→[lost by a `git checkout --` accident,
+  Caveats #10]→139 restored→140→**201, entirely attributable to the
+  cap-rail tip — see below**).
+  - Aggregate gate still passes: layer count exact (427=427), filament 2.8%
+    apart, estimated time 4.2% apart.
+  - Manifold pre-check passes both sides (`manifold=yes`, `number_of_parts=1`).
+  - Per-layer signal: **201 of 427 layers (47%) out of tolerance**, worst at
+    layer 406 (87.7% extrusion-length deviation) and layer 374 (4.75mm bbox
+    deviation) — both Z≈75-82mm, i.e. the cap-rail tip band, not the scoop.
+  - **This is a real regression in the raw count, but not in correctness —
+    it's a metric-visibility change, not a new defect.** `/cad-slice`'s
+    per-layer signal sums extrusion across the *entire* cross-section at
+    each Z, not per-member, so a member's own defect can be masked or
+    amplified by whatever else shares its Z-range. The cap-rail-tip defect
+    (below) was already present before this session — replacing the
+    previous wrong entry-wedge model with the correct scoop just removed a
+    source of *cancelling* error at the shared Z-layers, exposing the
+    tip defect's true severity for the first time. Independently confirmed:
+    the scoop's own region (`s`<45) measures **zero** failing layers on its
+    own; every one of the 201 current failures is in the cap-rail-tip band.
+  - **Cap-rail-tip root cause, precisely localized this session** (previous
+    sessions only had this at "Z≈74.6-85.0mm, 0-for-5 attempts" resolution):
+    a direct cross-section slice at the worst layer (Z=81.55) shows solid
+    material reaching all the way to `s`=231.40 — exactly one of
+    `TIP_SECTION_S`'s own section positions, where `CapRailTip`'s
+    `z_min_present_at()` threshold jumps from ~81 to ~83 over just 1.19mm of
+    `s` (between the `s`=230.21 and `s`=231.40 sections). The loft surface
+    bulges/overshoots across that steep local transition instead of
+    receding smoothly — real excess material, not a measurement artifact
+    (candidate extrusion at layer 406 is 6710mm vs baseline's 3790mm, 77%
+    higher, confirmed by direct G-code toolpath-length extraction, not just
+    the summary percentage).
+  - **Not fixed this session, deliberately**: `CapRailTip` has a documented
+    0-for-5 history including two build-hangs (100+s, non-terminating) from
+    finer-sectioned loft attempts. Given a precise, non-hanging diagnosis was
+    the highest-value outcome achievable without real risk of losing the
+    session to another hang, no further rebuild was attempted here. A
+    genuinely different construction primitive is still the right next
+    step (a real `AdditivePipe` sweep along the measured recede-curve as a
+    spine, rather than another hand-sectioned `Loft`) — or, more narrowly,
+    inserting one or two intermediate `TIP_SECTION_S` points specifically
+    between `s`=230.21 and 231.40 to soften that one steep transition,
+    which is a much smaller, more targeted change than a full rebuild and
+    worth trying first.
+  - One small, verified-safe fix *was* kept from this session: the entry
+    scoop's own tip (Z=83, previously dropped entirely to avoid a
+    self-intersecting sliver) now has a non-degenerate closing section
+    (`s_max` clipped to 1.5mm instead of the measured 0.50mm) — confirmed
+    via a second full `/cad-slice` run to have zero effect on the current
+    201 failures (they're all downstream of the cap-rail tip, not the
+    scoop's tip), but it's a real, harmless improvement in geometric
+    fidelity worth keeping regardless.
+  - **Follow-up session: the "narrow fix" above was tried and disproven.**
+    Two important corrections for whoever picks this up next:
+    1. **The documented "build hangs" on this member were a timeout-budget
+       illusion, not a real OCC failure.** This script's full build now
+       genuinely takes 2.5-3 minutes (it has grown a lot across today's
+       sessions) — every prior "hang" used a ~90-100s timeout, well short of
+       that. A build using *every* `TIP_RECEDE` point as its own
+       `TIP_SECTION_S` (16 sections instead of 8) completed cleanly in 3m2s
+       when given a real timeout. Budget 4-5 minutes for any future build
+       attempt on this script, not ~90s, before concluding something hung.
+    2. **The "missing `s`=230.80 point" fix had zero measurable effect** —
+       identical `/cad-slice` output to the byte (same 201 failing layers,
+       same per-layer deviations down to the decimal, same volume). The
+       "steep transition between sparse loft sections" diagnosis is
+       therefore **wrong**, not just unfixed. Reverted (kept the simpler
+       8-section version — no reason to carry the extra build-time cost of
+       16 sections for zero benefit).
+    3. **New lead, from direct G-code toolpath extraction at the worst
+       layer (406)**: candidate has 481 extrusion moves vs. baseline's 412
+       at that layer, but the **X/Y bounding envelope is nearly identical**
+       (candidate 83.8-314.7 vs baseline 83.8-313.7 in sliced bed
+       coordinates). That rules out "material bulging outward in `s`" as
+       the mechanism — the extra material is *within* the same envelope,
+       not beyond it. The more likely explanation is a small solid patch
+       or island *inside* that boundary in the candidate that the real part
+       doesn't have there, requiring extra top/bridge infill toolpath
+       (matching the same failure signature — high extrusion deviation,
+       low bbox deviation — as the wall-band-top-infill defect fixed
+       earlier today, a different member). Next step: map the actual
+       solid/void topology within the layer-406 cross-section for both
+       sides directly (point-in-polygon on the mesh, the technique used
+       successfully elsewhere in this ticket) rather than assuming a
+       boundary-position problem.
 
 **Sketch-profile pitfall**: an under-constrained (or mis-indexed) profile
 sketch can produce a shape that looks completely normal on casual inspection

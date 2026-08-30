@@ -384,26 +384,61 @@ for side, sign in (("Pos", 1), ("Neg", -1)):
     # different construction primitive entirely (e.g. a genuine Sweep/Pipe
     # along a spine, not a Loft between hand-built polygon sections) rather
     # than another loft-section variant.
-    tip_bottom_end = CAP_TOP - 1.0
-    tip_hook_local = [
-        (y, tip_bottom_end + (z - CAP_BOTTOM) / (CAP_TOP - CAP_BOTTOM) * (CAP_TOP - tip_bottom_end))
-        for y, z in hook_local
+    # AdditivePipe-family fix (this session), replacing the compressed-Z 2-section
+    # loft above (0-for-5 track record; either a no-op or a build-hanging OCC
+    # topology). Direct dense Y-Z cross-section probing near the tip (s=223-233,
+    # Z=70-85.4, 1-4mm intervals) found the real shape isn't a shrinking hook --
+    # it's the SAME hook cross-section (unchanged Y values throughout) whose
+    # material simply RECEDES in length at a rate that depends on Z: low-Z
+    # material recedes first (~s=223.7 at Z=70.15, matching CAP_TAPER_START
+    # almost exactly), high-Z material reaches nearly the true tip (~s=232.9 at
+    # Z=85.4). The relationship is close to linear (slope ~0.6mm-s per mm-Z) and
+    # was measured directly, not assumed. This is naturally a set of loft
+    # sections at DIFFERENT s positions, each using hook_local's own 10-point
+    # topology with each point's Z clipped up to whatever Z is still "present"
+    # at that s (points that have already receded collapse to the threshold
+    # height instead of being physically removed, keeping topology/point-count
+    # identical across every section -- the same fix that solved the earlier
+    # entry-taper non-manifold bug).
+    TIP_RECEDE = [  # (Z, s) measured via Mesh.crossSections, Pos side, s = X - meshXmin
+        (CAP_BOTTOM, CAP_TAPER_START),
+        (71.0, 224.25), (72.0, 224.84), (73.0, 225.44), (74.0, 226.03),
+        (76.0, 227.23), (77.0, 227.82), (78.0, 228.42), (79.0, 229.02),
+        (80.0, 229.61), (81.0, 230.21), (82.0, 230.80), (83.0, 231.40),
+        (84.0, 232.00), (85.0, 232.59),
+        (CAP_TOP, 232.9),
     ]
-    tip_hook_pts = [FreeCAD.Vector(sign * y, z, 0) for y, z in tip_hook_local]
-    if sign < 0:
-        tip_hook_pts = list(reversed(tip_hook_pts))
-    tip_start_sk = poly_sketch(
-        f"CapRailTipStart{side}Sketch", "YZ_Plane",
-        FreeCAD.Vector(0, 0, CAP_TAPER_START), hook_pts,
-    )
-    tip_end_sk = poly_sketch(
-        f"CapRailTipEnd{side}Sketch", "YZ_Plane",
-        FreeCAD.Vector(0, 0, 232.9), tip_hook_pts,
-    )
+
+    def z_min_present_at(s):
+        pts = TIP_RECEDE
+        if s <= pts[0][1]:
+            return pts[0][0]
+        if s >= pts[-1][1]:
+            return pts[-1][0]
+        for (z0, s0), (z1, s1) in zip(pts, pts[1:]):
+            if s0 <= s <= s1:
+                t = (s - s0) / (s1 - s0)
+                return z0 + t * (z1 - z0)
+        raise RuntimeError(f"z_min_present_at({s}): unreachable")
+
+    TIP_SECTION_S = [CAP_TAPER_START, 226.03, 228.42, 230.21, 231.40, 232.00, 232.59, 232.9]
+    tip_sketches = []
+    for i, s in enumerate(TIP_SECTION_S):
+        z_thresh = z_min_present_at(s)
+        # Add a tiny monotonic-in-point-order epsilon so clipping several
+        # points to the same threshold near the tip never leaves two points
+        # exactly coincident (a zero-length edge OCC rejects outright) --
+        # same trick as the entry-taper fix above.
+        clipped_local = [(y, max(z, z_thresh + 0.001 * j)) for j, (y, z) in enumerate(hook_local)]
+        clipped_pts = [FreeCAD.Vector(sign * y, z, 0) for y, z in clipped_local]
+        if sign < 0:
+            clipped_pts = list(reversed(clipped_pts))
+        sk = poly_sketch(f"CapRailTip{side}{i}Sketch", "YZ_Plane", FreeCAD.Vector(0, 0, s), clipped_pts)
+        tip_sketches.append(sk)
     tip = body.newObject("PartDesign::AdditiveLoft", f"CapRailTip{side}")
-    tip.Profile = tip_start_sk
-    tip.Sections = [tip_end_sk]
-    tip.Ruled = True
+    tip.Profile = tip_sketches[0]
+    tip.Sections = tip_sketches[1:]
+    tip.Ruled = True  # the measured recede curve is close to linear between sample points
     doc.recompute()
 
     # Climbing rails past the floor's end (s=182..232): lower band and cap
@@ -464,63 +499,96 @@ for side, sign in (("Pos", 1), ("Neg", -1)):
     assert_valid_tip(f"Skirt{side}Pad", require_single_solid=False)
 
 # =====================================================================
-# F. Entry wedge (gusset panels, s=0..40, both sides): tall/reaching-inward
-# near s=0, tapering to short/near-the-wall by s=40, fading into the floor.
-# Simplified from the measured V-diagonal boundary to a 6-section loft --
-# expanded from an earlier 2-section version to follow the measured
-# top-edge-descent curve (Z~=83 at s<=3, 53@10, 34@20, 22@30, fading by
-# s~=40) more closely.
+# F. Entry scoop (s=0..~40, both sides): NOT a solid gusset-panel wedge --
+# a user-provided side-view screenshot of the real part showed a large,
+# continuous, rounded/parabolic OPENING here (not solid panels with a small
+# V-cut), and a dense mesh re-inspection this session confirmed it precisely.
 #
-# REVERTED THIS SESSION: a from-scratch rebuild decomposing this into a
-# fixed Y(Z) boundary profile (independent of s, per a dense mesh probe)
-# padded the full 40mm and cut by a diagonal plane regressed 150->300
-# failing layers, in BOTH a wide-overlap variant and a narrowed variant
-# that avoided duplicating the wall band's own territory (identical result
-# either way -- ruling out coincident-face overlap as the cause). G-code
-# analysis at the worst layer (Z~=24.6mm) showed the candidate generating
-# "Top solid infill" + "Bridge infill" toolpath the baseline doesn't have
-# at that height -- i.e. PrusaSlicer is treating something at Z~=25 as an
-# unsupported top surface. Since this appeared identically whether or not
-# the new wedge's own outer boundary touched Z=25, the actual trigger is
-# most likely the WALL BAND's own already-documented flat-top-at-Z=25
-# approximation (see Caveats) becoming a much larger contiguous flat
-# surface once combined with a wedge that (unlike this one) reaches all
-# the way to the wall face at low Z across the full 40mm run -- not
-# something resolved this session. Reverted to this known-good 150-failing
-# version rather than ship a worse one; the real fix for the wedge likely
-# still needs a genuinely 2D-varying profile, but should probably be
-# tackled together with the wall-band zigzag fix (Caveats) rather than in
-# isolation, since this session found they interact. See README Caveat /
-# #34 comment thread for the full diagnosis.
+# The real shape is a rounded scoop: at each Z, material exists for
+# Y > boundary_y(Z) (void is INBOARD, toward center -- not outboard toward
+# the wall as the old wedge assumed), and that material's reach in s shrinks
+# smoothly as Z increases (S_MAX(Z) below) -- large reach (~39mm) near the
+# floor, tapering to ~0 near the cap rail. Both curves were measured via a
+# validated ray-casting probe against the real mesh (own from-scratch tool --
+# Mesh.crossSections()'s wire grouping proved unreliable, see repo history)
+# and are s-independent within a section's active range -- i.e. this is a
+# fixed Y(Z) profile whose reach in s is itself a function of Z, not a
+# profile that changes shape as it's swept along s. Built as a single
+# AdditiveLoft stacked along Z (not along s, unlike every other member in
+# this script) with a 4-point rectangular section per measured Z: Y from
+# boundary_y(Z) to inner_half_width+overlap (fusing into the wall band),
+# s from 0 to S_MAX(Z)+overlap. Consistent 4-point topology across all
+# sections avoids the mismatched-point-count non-manifold AdditiveLoft bug
+# hit earlier in this ticket's history.
 # =====================================================================
+SCOOP_OVERLAP_Y = 2.0   # into the wall band, for a genuine fuse
+SCOOP_OVERLAP_S = 0.5   # past S_MAX, same reason
+# (Z, boundary_y, S_MAX) -- boundary_y and S_MAX measured directly (dense
+# ray-casting probe, s=0.3-40 / Z=17-83); Z=55/60 boundary_y linearly
+# interpolated toward inner_half_width (measured only up to Z=50 directly),
+# Z>=65 clamped to inner_half_width since the scoop has visibly merged into
+# the wall band there (probe at s=1.0 found the full cross-section already
+# solid from Y=0 up for Z>=40, well within this shrinking-reach range).
+SCOOP_DATA = [
+    (16.0, 3.86, 39.07),  # Z lowered from measured 17.0: floor top is 16.67,
+                          # a bare 17.0 start left a ~0.33mm air gap that
+                          # caused a huge (~189%) per-layer extrusion spike
+                          # right at that seam -- same boundary_y/s_max as
+                          # measured, just extended down for overlap.
+    (20.0, 12.05, 32.75),
+    (25.0, 18.63, 26.45),
+    (30.0, 24.85, 22.42),
+    (35.0, 31.06, 19.59),
+    (40.0, 37.28, 16.93),
+    (45.0, 43.49, 14.26),
+    (50.0, 49.49, 11.60),
+    (55.0, None, 9.16),   # boundary_y interpolated below toward inner_half_width
+    (60.0, None, 7.16),
+    (65.0, None, 5.61),
+    (70.0, None, 4.45),
+    (75.0, None, 3.67),
+    (80.0, None, 3.27),
+    # Z=83 measured s_max=0.50 -- a razor-thin rectangle there self-intersected
+    # (PrusaSlicer flagged a ~38x extrusion-length spike, 101,294mm vs
+    # baseline's 2,607mm, undetected by isValid()/manifold checks). Dropping
+    # it entirely (loft stopping flat at Z=80) turned out worse: /cad-slice's
+    # per-layer signal sums extrusion across the WHOLE cross-section at each
+    # Z, not per-member, so the abrupt Z=80 cutoff (real material continues,
+    # just thinning, up to ~83) corrupted layers 374/404-407 (Z=74.8-81.4) --
+    # net regression from 127 to 201 failing layers even though the scoop's
+    # own s<45 region measured zero failures in isolation. Fix: keep the loft
+    # going to Z=83, but clip s_max to a safe minimum (1.5mm, not the
+    # measured 0.50mm) so the section stays non-degenerate -- a small
+    # documented simplification of the true tip shape, not a dropped feature.
+    (83.0, inner_half_width, 1.5),
+]
+
 for side, sign in (("Pos", 1), ("Neg", -1)):
-    wedge_sections = []
-    WEDGE = [
-        # (s, y_outer(wall face), y_inner(reach toward center), z_bottom, z_top)
-        (0.0, outer_half_width, 13.0, 0.0, 83.0),
-        (3.0, outer_half_width, 14.0, 0.0, 83.0),
-        (10.0, outer_half_width, 14.0, 0.0, 53.0),
-        (20.0, outer_half_width, 14.0, 0.0, 34.0),
-        (30.0, outer_half_width, 20.0, 0.0, 22.0),
-        (40.0, outer_half_width, outer_half_width - 0.5, 0.0, 16.67),
-    ]
-    for i, (s, y_out, y_in_reach, zb, zt) in enumerate(WEDGE):
-        y_out_s = sign * y_out
-        y_in_s = sign * y_in_reach
+    scoop_sections = []
+    for i, (z, boundary_y, s_max) in enumerate(SCOOP_DATA):
+        if boundary_y is None:
+            # Interpolate from the last measured point (50.0, 49.49) toward
+            # inner_half_width by Z=65, then hold at inner_half_width.
+            frac = min(1.0, (z - 50.0) / (65.0 - 50.0))
+            boundary_y = 49.49 + frac * (inner_half_width - 49.49)
+            boundary_y = min(boundary_y, inner_half_width)
+        y_lo = sign * boundary_y
+        y_hi = sign * (inner_half_width + SCOOP_OVERLAP_Y)
+        s_hi = s_max + SCOOP_OVERLAP_S
         pts = [
-            FreeCAD.Vector(min(y_out_s, y_in_s), zb, 0),
-            FreeCAD.Vector(max(y_out_s, y_in_s), zb, 0),
-            FreeCAD.Vector(max(y_out_s, y_in_s), zt, 0),
-            FreeCAD.Vector(min(y_out_s, y_in_s), zt, 0),
+            FreeCAD.Vector(0.0, min(y_lo, y_hi), 0),
+            FreeCAD.Vector(s_hi, min(y_lo, y_hi), 0),
+            FreeCAD.Vector(s_hi, max(y_lo, y_hi), 0),
+            FreeCAD.Vector(0.0, max(y_lo, y_hi), 0),
         ]
-        sk = poly_sketch(f"Wedge{side}{i}", "YZ_Plane", FreeCAD.Vector(0, 0, s), pts)
-        wedge_sections.append(sk)
-    wedge = body.newObject("PartDesign::AdditiveLoft", f"Wedge{side}")
-    wedge.Profile = wedge_sections[0]
-    wedge.Sections = wedge_sections[1:]
-    wedge.Ruled = True
+        sk = poly_sketch(f"Scoop{side}{i}", "XY_Plane", FreeCAD.Vector(0, 0, z), pts)
+        scoop_sections.append(sk)
+    scoop = body.newObject("PartDesign::AdditiveLoft", f"Scoop{side}")
+    scoop.Profile = scoop_sections[0]
+    scoop.Sections = scoop_sections[1:]
+    scoop.Ruled = True  # measured curves are smooth but not analytically simple; Ruled tracks samples directly
     doc.recompute()
-    assert_valid_tip(f"Wedge{side}", require_single_solid=False)
+    assert_valid_tip(f"Scoop{side}", require_single_solid=False)
 
 # =====================================================================
 # G. Rail-boss lobes: 4 lobes, both sides -- additive ears engaging the
