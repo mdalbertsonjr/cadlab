@@ -221,6 +221,57 @@ to regenerate at the new scale; only the floor plate's width is live
 
 ## Caveats
 
+- **RESOLVED this session: `Scoop{side}`'s low-Z boundary now follows the
+  real arc instead of a coarse/faceted approximation.** Prior sessions
+  correctly diagnosed the structural model (the entry cross-section is the
+  floor's own surface curving upward, a single connected boundary, not two
+  separate per-side wall cuts) and hand-fit a circle at `s`=1 (center
+  ≈(Y=0,Z=41.13), R≈24.47), but left the actual `SCOOP_DATA` table's
+  `boundary_y(Z)` values as the old coarse points and never debugged why an
+  automated multi-`s` fit was producing garbage.
+
+  This session re-measured directly with a from-scratch facet ray-casting
+  probe (own tool — barycentric intersection of a vertical ray against every
+  mesh facet, not `Mesh.crossSections()`) and found something that
+  simplifies the fix a lot: **the arc's shape (center, radius) is IDENTICAL
+  at `s`=1, 10, and 20** — same boundary_y(Z) values to 3 decimal places at
+  all three. Only how far the arc is *carved* (the existing `S_MAX(Z)`
+  column) shrinks with `s`; the curve itself doesn't change shape until it
+  starts flattening out past `s`≈20. A clean least-squares circle fit on the
+  `s`=1/10/20 data, restricted to `Y`≤15-17.7 (matching the earlier `s`=1
+  hand-fit's own valid range — beyond that the boundary transitions to a
+  separate structure, not part of this arc): **center Z=40.2, R=23.5**,
+  residuals under 0.01mm. This is close to but not identical to the earlier
+  hand-fit (41.13/24.47) — expected, different point sets, both reasonable.
+
+  **Fix applied**: replaced `SCOOP_DATA`'s `boundary_y` values for Z=18-50
+  with `sqrt(R² - (Z-cz)²)`, using the *existing* `S_MAX(Z)` column
+  unchanged (linearly interpolated at the new, denser Z steps) — same
+  architecture (Z-stacked `AdditiveLoft`, same overlap/fuse handling), just a
+  corrected and much denser boundary curve in the low-to-mid Z range that was
+  visibly faceted before. The old table's boundary_y at Z=20 (12.05) already
+  nearly matched the arc (12.01) — it diverges increasingly above that (Z=40:
+  old 37.28 vs. arc's actual max reach of 23.5), which is exactly the region
+  the screenshots showed as wrong.
+
+  **Result, independently verified via a full `/cad-slice` re-run**: single
+  valid solid (463,403mm³, 1.7% off the real 455,738mm³), manifold both
+  sides, Ctrl+R rescale holds, aggregate gate passes (1.1%/3.2%). Per-layer:
+  **157/427 failing, down from 201** — and critically, every one of the
+  worst-5 failing layers (406, 405, 407, 374, 404) is in the already-known,
+  separately-tracked `CapRailTip` region (Z≈74-85mm, untouched by this fix),
+  not the scoop. The scoop's own region is now both visually correct
+  (matches the reference screenshots' smooth curve) and numerically clean.
+
+  **Not yet touched**: the Z=50-83 connecting region (bridging the dome up to
+  the cap rail near the entry) still uses the old, less-precisely-measured
+  `boundary_y`/`S_MAX` values — a facet probe this session found a genuine,
+  separate solid "gusset" structure there (material reaching up to Z≈83 at
+  `s`≈1-10, fading to nothing by `s`≈15, unrelated to the dome arc) that
+  roughly matches the existing table's shape but wasn't re-verified point by
+  point. Since the worst failing layers are all in `CapRailTip`, not this
+  region, further refinement here is lower priority than fixing that member.
+
 - **This build does not pass `/cad-slice` yet** — see Validation. Known
   remaining gaps, roughly in order of likely impact:
   1. **Two members share the same unsolved problem class: a boundary that
@@ -492,19 +543,17 @@ capture) in a container matching this repo's `containers/Dockerfile` (host
 `python3` currently can't import FreeCAD at all — a separate,
 already-flagged environment gap):
 
-- **Single valid solid**, volume ≈451,990mm³ (real mesh: 455,738mm³ — **0.8%
-  off**, down from 6.9%/7.8% off in earlier revisions; volume is a rough
-  proxy, `/cad-slice`'s per-layer signal is the real one), bounding box
-  232.9 × 142.4 × 85.5mm.
-- **`/cad-slice` per-layer signal: 201/427 failing** — a regression in the
-  raw count from the prior session's 127, but **not a regression in
-  correctness**: the entry scoop fix (above) independently measures **zero**
-  failures in its own region (`s`<45) and fixed a real, user-identified
-  defect. All 201 current failures are now concentrated in one place — the
-  cap-rail tip (Z≈74.6-85.0mm) — which turns out to have had a real,
-  precisely-localized defect of its own that a coarser per-region read
-  hadn't previously isolated this cleanly. See Caveats for the full
-  investigation and why it wasn't fixed this session.
+- **Single valid solid**, volume ≈463,403mm³ (real mesh: 455,738mm³ — **1.7%
+  off**; volume is a rough proxy, `/cad-slice`'s per-layer signal is the real
+  one), bounding box 232.9 × 142.4 × 85.5mm.
+- **`/cad-slice` per-layer signal: 157/427 failing**, down from 201 this
+  session (and 394 at the start of today) — the entry-scoop arc fix (see
+  Caveats) independently re-verified via a fresh `/cad-slice` run: every one
+  of the worst-5 failing layers is in the already-known, separate cap-rail
+  tip region (Z≈74-85mm), not the scoop. **Still not a pass** — that member
+  remains the single largest, precisely-localized remaining gap; see
+  Caveats for its own investigation history and why it hasn't been fixed
+  yet.
 - **Ctrl+R rescale** to an 8.4oz slim can (53.0/131.0mm): `outer_half_width`
   grows to 70.35mm as expected, stays a single valid solid (this build now
   takes noticeably longer to recompute than earlier revisions — budget more

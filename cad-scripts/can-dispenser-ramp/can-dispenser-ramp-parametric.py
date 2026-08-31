@@ -535,13 +535,38 @@ SCOOP_DATA = [
                           # caused a huge (~189%) per-layer extrusion spike
                           # right at that seam -- same boundary_y/s_max as
                           # measured, just extended down for overlap.
-    (20.0, 12.05, 32.75),
-    (25.0, 18.63, 26.45),
-    (30.0, 24.85, 22.42),
-    (35.0, 31.06, 19.59),
-    (40.0, 37.28, 16.93),
-    (45.0, 43.49, 14.26),
-    (50.0, 49.49, 11.60),
+    # Z=18..50 replaced (this session): the boundary here is genuinely a
+    # circular arc, not the straight-line/coarse fit the old points implied.
+    # Direct ray-cast probing (own facet-intersection tool, not
+    # Mesh.crossSections()) at s=1/10/20 found IDENTICAL boundary_y(Z)
+    # profiles at all three -- the arc's shape doesn't change with s across
+    # that whole span, only how far it's carved in s does (S_MAX below,
+    # unchanged from the prior fit). Circle fit on (Y, Z) points at s=1,
+    # Y<=15 (residuals <0.01mm): center Z=40.2, R=23.5 -- boundary_y(Z) =
+    # sqrt(R^2 - (Z-cz)^2). This is what the user's side/rear-view screenshots
+    # were showing as a smooth rounded curve; the old points (12.05, 18.63,
+    # 24.85, 31.06, 37.28...) grew roughly linearly without bound, well past
+    # the arc's actual max reach of Y=R=23.5 at its Z=40.2 peak -- correct at
+    # Z=20 (12.05 vs 12.01) but increasingly wrong above that. S_MAX values
+    # unchanged (linearly interpolated from the same prior fit at these finer
+    # Z steps) -- only the curve's shape changed, not its length-wise reach.
+    (18.0, 7.71, 35.91),
+    (20.0, 12.01, 32.75),
+    (22.0, 14.87, 30.23),
+    (24.0, 17.02, 27.71),
+    (26.0, 18.72, 25.64),
+    (28.0, 20.09, 24.03),
+    (30.0, 21.17, 22.42),
+    (32.0, 22.02, 21.29),
+    (34.0, 22.67, 20.16),
+    (36.0, 23.12, 19.06),
+    (38.0, 23.40, 17.99),
+    (40.0, 23.50, 16.93),
+    (42.0, 23.43, 15.86),
+    (44.0, 23.19, 14.79),
+    (46.0, 22.77, 13.73),
+    (48.0, 22.17, 12.66),
+    (50.0, 21.36, 11.60),
     (55.0, None, 9.16),   # boundary_y interpolated below toward inner_half_width
     (60.0, None, 7.16),
     (65.0, None, 5.61),
